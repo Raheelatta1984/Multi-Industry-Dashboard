@@ -34,6 +34,36 @@ npm run dev          # http://localhost:8080
 
 The prototype engine is deterministic on purpose (auditable, offline, instant); the production architecture swaps the matcher for an embeddings + LLM ensemble behind the same review gate — see the docs.
 
+## Sandbox self-healing (`scripts/sandbox-guard.mjs`)
+
+Arena sandboxes get recycled between sessions: the file patchset comes back, but the **git branch pointer resets to the scaffold commit**, `node_modules` is wiped, and the dev server dies. The sandbox guard detects and repairs that state automatically:
+
+```
+node scripts/sandbox-guard.mjs --status                 # what state are we in?
+node scripts/sandbox-guard.mjs --recover                # heal git + deps
+node scripts/sandbox-guard.mjs --recover --with-server  # also restart the preview
+node scripts/sandbox-guard.mjs --recover --force        # reset even a dirty tree (snapshots to sandbox-rescue/* first)
+npm run guard                                           # 15s watchdog
+```
+
+**Four trigger layers:**
+
+| Trigger | Fires when | Effect |
+|---|---|---|
+| `~/.profile` / `~/.bash_profile` hook | every login shell — i.e. the **first command after a recycle** | full heal (git + deps + server), ~80ms when healthy |
+| `startup.sh` | platform revive re-runs it (see `.grok/references/hibernate-revive.md`) | full heal + preview back up |
+| `predev` npm hook | any `npm run dev` | heals before Vite starts |
+| `npm run guard` watchdog | while a session is live | catches mid-session resets, restarts a crashed server |
+
+**Safety rules** (all unit-tested in `scripts/sandbox-guard.test.mjs`):
+
+- The pointer is only reset when the local branch is a plain ancestor of the remote (rolled-back pointer) **and** the worktree already matches the remote commit — a pointer-only heal.
+- A worktree with real uncommitted changes is never reset automatically (log an `uncommitted-work` event; `--force` snapshots to a `sandbox-rescue/*` branch first).
+- A diverged history is never touched.
+- Unpushed local commits are kept, never "healed" away.
+
+Runtime state lives in `.sandbox-guard.json` / `.sandbox-guard.log` (gitignored). To intentionally stop the server without the guard restarting it: `touch /tmp/.meridian-guard-paused`.
+
 ## Documentation
 
 The full product & market analysis package lives in [`docs/`](docs/README.md):
