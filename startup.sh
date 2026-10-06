@@ -9,6 +9,10 @@
 set -eu
 cd "$(dirname "$0")"
 
+# Reinstall the login-shell trigger first — a recycle wipes ~/.profile, and
+# this repo file is the only copy that survives (self-healing trigger).
+sh scripts/install-profile-hook.sh || true
+
 # :8081 is QA-only — a revive must never inherit a stale built-output preview.
 node scripts/preview.mjs stop || true
 
