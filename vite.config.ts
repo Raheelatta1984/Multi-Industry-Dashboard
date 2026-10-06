@@ -150,6 +150,8 @@ export default defineConfig(({ command, isPreview }) => ({
     host: "0.0.0.0",
     port: 8080,
     strictPort: true,
+    // Live preview reaches the dev server through a proxied sandbox host.
+    allowedHosts: true,
   },
   preview: {
     host: "127.0.0.1",
