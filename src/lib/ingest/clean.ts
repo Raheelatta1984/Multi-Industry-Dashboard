@@ -4,7 +4,7 @@
  * inspect before publish (Alteryx-style, but generated instead of hand-built).
  */
 import type { CurrencyCode } from "../domain";
-import { normalizeHeader, parseDateLoose, stripNumber, TOTAL_RE } from "./profile";
+import { detectDateConvention, normalizeHeader, parseDateLoose, stripNumber, TOTAL_RE } from "./profile";
 import type { CellValue, CleanStep, CleanedTable, ColumnProfile, SheetProfile } from "./types";
 
 export function cleanSheet(profile: SheetProfile): { table: CleanedTable; steps: CleanStep[] } {
@@ -87,10 +87,12 @@ export function cleanSheet(profile: SheetProfile): { table: CleanedTable; steps:
     if (type === "date") {
       let normalized = 0;
       let bad = 0;
+      // Resolve the day/month ambiguity from unambiguous values in the column.
+      const convention = detectDateConvention(out.map((r) => r[index] ?? null));
       for (const r of out) {
         const v = r[index];
         if (v === null) continue;
-        const iso = parseDateLoose(v);
+        const iso = parseDateLoose(v, convention);
         if (iso) {
           if (iso !== v) normalized++;
           r[index] = iso;
@@ -99,7 +101,14 @@ export function cleanSheet(profile: SheetProfile): { table: CleanedTable; steps:
           r[index] = null;
         }
       }
-      steps.push({ op: "coerce_dates", column: name, to: "YYYY-MM-DD", normalized, unparseable: bad });
+      steps.push({
+        op: "coerce_dates",
+        column: name,
+        to: "YYYY-MM-DD",
+        normalized,
+        unparseable: bad,
+        convention: convention ?? undefined,
+      });
     }
 
     if (type === "currency" || type === "number" || type === "percent") {

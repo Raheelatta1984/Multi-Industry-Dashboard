@@ -84,6 +84,7 @@ Twelve tables ship at MVP (all implemented in the prototype): `meta`, `fx`, `dep
 | Semantic mapping | ✅ domain classification with evidence; column→field mapping with confidence + reasons; HITL override console |
 | Value coercion | ✅ fuzzy mapping of entities, departments, regions, channels, currencies with per-value scores |
 | Gated publish + merge | ✅ commit only after review; incremental merge by stable row ids; patch report |
+| AI onboarding interview | ✅ agent chatbot (upload / integration / pipeline / mapping entry points) asking purpose, company scope, department scope and field review — publish hard-gated on confirmed onboarding |
 | Canonical warehouse | ✅ 12-table model with multi-currency FX conversion |
 | Leadership boards | ✅ 150+ boards, group command center, drill-downs, live patches |
 | Warehouse browser | ✅ `/warehouse` — model, KPI dictionary, lineage chain, source registry with quality scores |

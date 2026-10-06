@@ -27,7 +27,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   const setIndustry = useAppStore((s) => s.setIndustry);
   const items = [
     { to: "/", label: "Command" },
-    { to: "/ingest", label: "AI Ingest Studio" },
+    { to: "/ingest", label: "AI Onboarding Studio" },
     { to: "/warehouse", label: "Warehouse" },
     { to: "/catalog", label: "Boards" },
     { to: "/data", label: "Excel (template)" },

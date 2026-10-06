@@ -84,6 +84,21 @@ This document stretches the original brief into a full requirement set. Prioriti
 | D7 | New-entity onboarding: map a new entity's chart of accounts / org structure to the group model in a guided session | S |
 | D8 | Golden-dataset evaluation harness per industry; regression-score every mapping-model change before release | S |
 
+### D-bis. AI onboarding interview (the publish gate)
+
+The onboarding agent is the trust ceremony between ingestion and the warehouse. It is a chat with an agent that accepts **file upload, integrations, data pipelines, or direct data mapping** as the entry point, then asks — with answers pre-filled from what the profiler found in the file:
+
+| ID | Requirement | Priority |
+|---|---|---|
+| D9 | Entry points: file upload, connector/integration, scheduled pipeline, or start-from-mapping — all funnel into the same interview | M |
+| D10 | Intent question: "why are you injecting this data?" (monthly reporting / new entity / one-off analysis / historical backfill / correction) — recorded on lineage | M |
+| D11 | Scope questions, data-aware: single vs multiple companies and departments, with the entities/functions detected in the file proposed for confirmation | M |
+| D12 | Field-by-field review step: the agent walks every column's proposed mapping; low-confidence items called out; overrides taken inline | M |
+| D13 | Generated onboarding profile (purpose, scope, domain, fields, quality, period, currency) presented for confirmation before publish unlocks | M |
+| D14 | **Hard gate:** no data is committed, displayed or visualised on any dashboard until the onboarding profile is confirmed — enforced server/store-side, not only in the UI | M |
+| D15 | Interview transcript retained as an audit artefact alongside recipe and mappings | S |
+| D16 | Repeat-onboarding memory: same entity + similar file structure auto-answers the interview in production (draft for one-click confirmation) | S |
+
 ### E. Warehouse & semantic layer
 
 | ID | Requirement | Priority |
@@ -156,7 +171,13 @@ This document stretches the original brief into a full requirement set. Prioriti
 - The answer is computed from governed gold tables, shows the ranking, and names the tables used ✓
 - Questions outside the governed model are refused with an explanation, not hallucinated ✓
 
-**US-04 — "New subsidiary"**
+**US-04 — "Onboarded, or it doesn't exist"**
+*As group CFO, a file arrives from an entity.*
+- Before anything is committed, the agent interviews the uploader: why the data is arriving, whose it is, and a field-by-field review ✓
+- The interview must be confirmed before publish unlocks — un-onboarded data physically cannot reach a dashboard ✓
+- The confirmed purpose and scope are stamped onto the file's lineage forever ✓
+
+**US-05 — "New subsidiary"**
 *As group analyst, a new company joins with 3 years of Excel history.*
 - I upload their files; the mapping console pre-fills from similar entities in the same industry ✓
 - Where their chart of accounts differs, I map once; it sticks for future uploads ✓

@@ -9,8 +9,9 @@ import { buildRawSheet, profileSheet, readRawSheet } from "./profile";
 import { cleanSheet } from "./clean";
 import { classifyDomain, mapColumns } from "./semantic";
 import { publishRun } from "./publish";
-import type { CellValue, IngestRun } from "./types";
-import { emptyRun } from "./types";
+import { buildProfile } from "./onboarding";
+import type { CellValue, IngestRun, OnboardingAnswers } from "./types";
+import { emptyOnboarding, emptyRun } from "./types";
 
 function advance(run: IngestRun): IngestRun {
   const profile = run.raw ? profileSheet(run.raw) : null;
@@ -24,10 +25,13 @@ function advance(run: IngestRun): IngestRun {
 export type IngestStore = {
   active: IngestRun | null;
   history: IngestRun[];
+  /** The intake interview. Publish is refused until it is confirmed. */
+  onboarding: OnboardingAnswers | null;
   ingestGrid: (fileName: string, sheetName: string, grid: CellValue[][]) => IngestRun;
   ingestBuffer: (fileName: string, buffer: ArrayBuffer) => IngestRun;
   setActive: (id: string) => void;
   overrideMapping: (column: string, target: string | null) => void;
+  patchOnboarding: (partial: Partial<OnboardingAnswers>) => void;
   publish: () => IngestRun | null;
   clearActive: () => void;
 };
@@ -35,16 +39,26 @@ export type IngestStore = {
 export const useIngestStore = create<IngestStore>((set, get) => ({
   active: null,
   history: [],
+  onboarding: null,
   ingestGrid: (fileName, sheetName, grid) => {
     const raw = buildRawSheet(grid, fileName, sheetName);
     const run = advance({ ...emptyRun(fileName), raw });
-    set({ active: run, history: [run, ...get().history].slice(0, 24) });
+    set({
+      active: run,
+      // A new file restarts the interview, but remembers how data arrived.
+      onboarding: emptyOnboarding(get().onboarding?.sourceKind ?? null),
+      history: [run, ...get().history.filter((r) => r.id !== run.id)].slice(0, 24),
+    });
     return run;
   },
   ingestBuffer: (fileName, buffer) => {
     const raw = readRawSheet(buffer, fileName);
     const run = advance({ ...emptyRun(fileName), raw });
-    set({ active: run, history: [run, ...get().history].slice(0, 24) });
+    set({
+      active: run,
+      onboarding: emptyOnboarding(get().onboarding?.sourceKind ?? null),
+      history: [run, ...get().history.filter((r) => r.id !== run.id)].slice(0, 24),
+    });
     return run;
   },
   setActive: (id) => {
@@ -72,12 +86,23 @@ export const useIngestStore = create<IngestStore>((set, get) => ({
       history: get().history.map((r) => (r.id === run.id ? run : r)),
     });
   },
+  patchOnboarding: (partial) => {
+    const current = get().onboarding ?? emptyOnboarding();
+    set({ onboarding: { ...current, ...partial } });
+  },
   publish: () => {
     const active = get().active;
+    const ob = get().onboarding;
+    // The gate: no confirmed onboarding interview → no commit, full stop.
     if (!active || !active.domain?.domain || !active.cleaned) return null;
+    if (!ob?.summaryConfirmed) return null;
     const app = useAppStore.getState();
     const { workbook, result, tick } = publishRun(active, app.workbook);
-    const run: IngestRun = { ...active, result };
+    const run: IngestRun = {
+      ...active,
+      result,
+      onboardingProfile: buildProfile(active, ob),
+    };
     useAppStore.setState({
       workbook,
       source: "upload",
@@ -94,5 +119,5 @@ export const useIngestStore = create<IngestStore>((set, get) => ({
     });
     return run;
   },
-  clearActive: () => set({ active: null }),
+  clearActive: () => set({ active: null, onboarding: null }),
 }));

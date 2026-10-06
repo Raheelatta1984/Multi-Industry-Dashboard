@@ -224,7 +224,15 @@ function WarehousePage() {
               )}
               {history.map((r) => (
                 <tr key={r.id}>
-                  <td className="max-w-56 truncate px-4 py-2.5 font-medium">{r.fileName}</td>
+                  <td className="max-w-56 px-4 py-2.5 font-medium">
+                    <span className="block truncate">{r.fileName}</span>
+                    {r.onboardingProfile && (
+                      <span className="block truncate text-[11px] font-normal text-muted-foreground">
+                        {r.onboardingProfile.purposeLabel} ·{" "}
+                        {r.onboardingProfile.entityScope === "single" ? "single" : "multiple"} company
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-2.5 text-muted-foreground">{r.domain?.domain ?? "—"}</td>
                   <td className="px-4 py-2.5 tabular">{formatNumber(r.profile?.rowCount ?? 0)}</td>
                   <td className="px-4 py-2.5 tabular">{r.profile?.qualityScore ?? "—"}</td>

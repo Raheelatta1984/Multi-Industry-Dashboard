@@ -14,7 +14,7 @@ npm run dev          # http://localhost:8080
 | Route | What it shows |
 |---|---|
 | `/` | Group command center across 12 industries, live patches, FX conversion |
-| `/ingest` | **AI Ingest Studio** — the core demo. Drop any `.xlsx/.xls/.csv` (or run one of the bundled messy sample files) and watch: header detection → column profiling → generated cleaning recipe → semantic mapping with confidence scores → human review → gated publish into the warehouse |
+| `/ingest` | **AI Onboarding Studio** — the core demo. An agent chatbot with file upload, integrations and pipeline options conducts the intake interview: why is the data arriving, single or multiple companies, single or multiple departments, field-by-field review — then generates the onboarding profile. **Nothing is committed to the warehouse or shown on dashboards until onboarding is confirmed** |
 | `/warehouse` | The semantic layer: canonical model, KPI dictionary, lineage, source registry with quality scores |
 | `/catalog`, `/board/$id` | 150+ department boards, all driven by the same warehouse |
 | `/data` | The legacy fixed-template Excel studio (still supported) |
@@ -29,6 +29,8 @@ npm run dev          # http://localhost:8080
 2. **Clean** (`clean.ts`) — generates and applies a reviewable recipe: ISO dates, currency-symbol stripping, dedupe, totals removal, category standardisation.
 3. **Map** (`semantic.ts`) — dataset classification into a canonical domain + column→field mapping via synonym dictionaries, value-shape evidence and fallbacks, each with confidence and a human-readable reason; fuzzy coercion of values into controlled vocabularies (entities, departments, regions, channels, currencies).
 4. **Publish** (`publish.ts`) — builds canonical rows, records value coercions, merges incrementally into the live workbook by stable row ids, and reports the patch (+added / ~updated / boards lit).
+
+**Onboarding gate** (`onboarding.ts` + the chat in `/ingest`): every file passes an AI-guided interview before publish is unlocked — purpose (why the data is injected), company scope (single/multiple, auto-detected from the data), department scope (single/multiple, auto-detected), field-by-field mapping review, and a generated onboarding profile attached to lineage. The gate is enforced in the store (`publish()` refuses unconfirmed onboardings), not just in the UI.
 
 The prototype engine is deterministic on purpose (auditable, offline, instant); the production architecture swaps the matcher for an embeddings + LLM ensemble behind the same review gate — see the docs.
 

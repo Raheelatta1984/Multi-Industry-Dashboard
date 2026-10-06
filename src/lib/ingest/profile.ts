@@ -45,7 +45,27 @@ function looksLikeDate(v: CellValue): boolean {
     /^(q[1-4])[ -]?\d{0,4}$/i.test(v) || /^\d{4}-\d{2}$/.test(v);
 }
 
-function parseDateLoose(v: CellValue): string | null {
+/** Detect the day/month convention of a column from unambiguous samples (13+ in a day slot). */
+export type DateConvention = "dmy" | "mdy" | null;
+
+export function detectDateConvention(values: CellValue[]): DateConvention {
+  let dmy = false;
+  let mdy = false;
+  for (const v of values) {
+    if (typeof v !== "string") continue;
+    const m = v.trim().match(/^(\d{1,2})[/](\d{1,2})[/](\d{2,4})$/);
+    if (!m) continue;
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    if (a > 12 && b <= 12) dmy = true;
+    else if (b > 12 && a <= 12) mdy = true;
+  }
+  if (dmy && !mdy) return "dmy";
+  if (mdy && !dmy) return "mdy";
+  return null;
+}
+
+function parseDateLoose(v: CellValue, convention: DateConvention = "mdy"): string | null {
   if (typeof v === "number" && v > 20000 && v < 60000) {
     const p = XLSX.SSF.parse_date_code(v);
     if (p) return new Date(Date.UTC(p.y, p.m - 1, p.d)).toISOString().slice(0, 10);
@@ -71,10 +91,16 @@ function parseDateLoose(v: CellValue): string | null {
   }
   const slash = s.match(/^(\d{1,2})[/](\d{1,2})[/](\d{2,4})$/);
   if (slash) {
-    let [a, b] = [Number(slash[1]), Number(slash[2])];
+    let a = Number(slash[1]);
+    let b = Number(slash[2]);
     let y = Number(slash[3]);
     if (y < 100) y += 2000;
-    if (a > 12 && b <= 12) [a, b] = [b, a]; // DD/MM → MM/DD best effort
+    if (convention === "dmy") {
+      // Day-first file: swap so a=month, b=day.
+      [a, b] = [b, a];
+    } else if (a > 12 && b <= 12) {
+      [a, b] = [b, a]; // unambiguous day-first value in an unclear file
+    }
     return `${y}-${String(a).padStart(2, "0")}-${String(b).padStart(2, "0")}`;
   }
   const d = new Date(s);

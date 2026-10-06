@@ -50,7 +50,7 @@ export function CommandPalette() {
                   void navigate({ to: "/ingest" });
                 }}
               >
-                AI Ingest Studio
+                AI Onboarding Studio
               </CommandItem>
               <CommandItem
                 onSelect={() => {

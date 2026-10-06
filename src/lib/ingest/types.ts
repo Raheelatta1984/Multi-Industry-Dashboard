@@ -74,7 +74,7 @@ export type CleanStep =
   | { op: "header_normalize"; detail: string }
   | { op: "header_dedupe"; renamed: string[] }
   | { op: "trim_whitespace"; columns: string[]; fixedCells: number }
-  | { op: "coerce_dates"; column: string; to: "YYYY-MM-DD"; normalized: number; unparseable: number }
+  | { op: "coerce_dates"; column: string; to: "YYYY-MM-DD"; normalized: number; unparseable: number; convention?: "dmy" | "mdy" }
   | { op: "strip_currency"; column: string; currency: CurrencyCode; normalized: number }
   | { op: "coerce_numbers"; column: string; normalized: number; unparseable: number }
   | { op: "standardize_categories"; column: string; variants: number; map: Array<[string, string]> }
@@ -141,7 +141,78 @@ export type IngestRun = {
   domain: DomainClassification | null;
   mappings: ColumnMapping[];
   result: PublishResult | null;
+  /** Set at publish time once the onboarding interview is confirmed. */
+  onboardingProfile: OnboardingProfile | null;
 };
+
+// ---------------------------------------------------------------------------
+// AI onboarding — the guided intake interview that gates every publish
+// ---------------------------------------------------------------------------
+
+export type SourceKind = "upload" | "integration" | "pipeline" | "mapping";
+
+export type Purpose =
+  | "monthly_reporting"
+  | "new_entity"
+  | "one_off_analysis"
+  | "historical_backfill"
+  | "replace_data";
+
+export type OnboardingAnswers = {
+  sourceKind: SourceKind | null;
+  purpose: Purpose | null;
+  purposeNote: string | null;
+  entityScope: "single" | "multiple" | null;
+  /** Canonical entity labels confirmed during onboarding. */
+  entities: string[];
+  entitiesConfirmed: boolean;
+  departmentScope: "single" | "multiple" | null;
+  /** Canonical department labels confirmed during onboarding. */
+  departments: string[];
+  departmentsConfirmed: boolean;
+  fieldsConfirmed: boolean;
+  summaryConfirmed: boolean;
+};
+
+export type OnboardingProfile = {
+  fileName: string;
+  sourceKind: SourceKind;
+  purpose: Purpose;
+  purposeLabel: string;
+  purposeNote: string | null;
+  entityScope: "single" | "multiple";
+  entities: string[];
+  departmentScope: "single" | "multiple";
+  departments: string[];
+  domain: string | null;
+  rowCount: number;
+  columnCount: number;
+  mappedColumns: number;
+  excludedColumns: number;
+  lowConfidenceColumns: string[];
+  mappingConfidence: number;
+  qualityScore: number;
+  periodFrom: string | null;
+  periodTo: string | null;
+  currency: string | null;
+  completedAt: number;
+};
+
+export function emptyOnboarding(sourceKind: SourceKind | null = null): OnboardingAnswers {
+  return {
+    sourceKind,
+    purpose: null,
+    purposeNote: null,
+    entityScope: null,
+    entities: [],
+    entitiesConfirmed: false,
+    departmentScope: null,
+    departments: [],
+    departmentsConfirmed: false,
+    fieldsConfirmed: false,
+    summaryConfirmed: false,
+  };
+}
 
 export function emptyRun(fileName = ""): IngestRun {
   return {
@@ -155,5 +226,6 @@ export function emptyRun(fileName = ""): IngestRun {
     domain: null,
     mappings: [],
     result: null,
+    onboardingProfile: null,
   };
 }

@@ -29,13 +29,14 @@ function Home() {
           </h1>
           <p className="mt-3 max-w-xl text-sm text-muted-foreground">
             {DASHBOARD_COUNT} boards across twelve industries. Upload <span className="text-foreground">any</span>{" "}
-            spreadsheet — the AI studio profiles, cleans and maps it onto the group warehouse, then every board, KPI and
-            export updates. Currency conversion is live.
+            spreadsheet — the AI agent onboards it through a guided interview (purpose, companies, departments,
+            field-by-field review) before anything is committed, then every board, KPI and export updates. Currency
+            conversion is live.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button asChild>
-            <Link to="/ingest">Ingest any Excel</Link>
+            <Link to="/ingest">Start AI onboarding</Link>
           </Button>
           <Button variant="outline" asChild>
             <Link to="/catalog">Browse boards</Link>
