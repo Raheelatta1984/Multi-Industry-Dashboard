@@ -168,6 +168,32 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** TCP says nothing about health — ask the app for a real response. */
+function httpOk(timeoutSec = 10) {
+  const r = spawnSync(
+    "curl",
+    ["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", String(timeoutSec), `http://127.0.0.1:${SERVER_PORT}/`],
+    { encoding: "utf8", timeout: (timeoutSec + 3) * 1000 },
+  );
+  const code = (r.stdout ?? "").trim();
+  return code.startsWith("2") || code.startsWith("3");
+}
+
+/** Kill exactly the process listening on the dev port (and its children). */
+function killDevServer() {
+  const ss = spawnSync("sh", ["-c", `ss -ltnp 2>/dev/null | grep ':${SERVER_PORT} '`], { encoding: "utf8" });
+  const pids = [...(ss.stdout ?? "").matchAll(/pid=(\d+)/g)].map((m) => Number(m[1]));
+  for (const pid of pids) {
+    if (pid === process.pid) continue;
+    spawnSync("kill", [String(pid)], { timeout: 5000 }); // listener (vite)
+    spawnSync("sh", ["-c", `pkill -P ${pid} 2>/dev/null`], { timeout: 5000 }); // its children
+  }
+  if (pids.length) return true;
+  // Fallback: the npm/with-app-env wrappers that own the dev chain.
+  spawnSync("pkill", ["-f", "with-app-env.mjs vite dev"], { timeout: 5000 });
+  return true;
+}
+
 /** Single-instance lock — stale after 20 minutes (a crashed holder). */
 function acquireLock() {
   try {
@@ -224,19 +250,26 @@ async function ensureServer(quiet) {
     logEvent("server-paused", `${PAUSE_PATH} present — leaving the server down on purpose`, quiet);
     return false;
   }
-  if (await portOpen()) return true;
+  if (await httpOk()) return true;
+  if (await portOpen()) {
+    // Listening but erroring (e.g. node_modules was replaced under a live
+    // server). A broken listener gets one clean restart.
+    logEvent("server-unhealthy", `port :${SERVER_PORT} answers but the app errors — restarting the dev server`, quiet);
+    killDevServer();
+    await sleep(1500);
+  }
   logEvent("server-starting", `spawning npm run dev (log: ${DEV_LOG})`, quiet);
   // Background via sh + nohup so the server is reparented and survives this
   // process (and the watchdog) exiting. The shell returns immediately.
   spawnSync("sh", ["-c", `nohup npm run dev >>${DEV_LOG} 2>&1 &`], { cwd: ROOT, timeout: 5000, env: process.env });
   for (let i = 0; i < 90; i++) {
-    if (await portOpen()) {
-      logEvent("server-up", `dev server answering on :${SERVER_PORT}`, quiet);
+    if (await httpOk()) {
+      logEvent("server-up", `dev server healthy on :${SERVER_PORT}`, quiet);
       return true;
     }
     await sleep(1000);
   }
-  logEvent("server-timeout", `dev server did not answer on :${SERVER_PORT} within 90s — see ${DEV_LOG}`, quiet);
+  logEvent("server-timeout", `dev server did not serve a healthy response on :${SERVER_PORT} within 90s — see ${DEV_LOG}`, quiet);
   return false;
 }
 
@@ -343,7 +376,7 @@ export async function status() {
   const marker = readMarker();
   const origin = run("git", ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`]).out || null;
   const depsOk = nodeModulesOk();
-  const server = await portOpen();
+  const server = (await portOpen()) && httpOk(5);
   const verdict = fastVerdict({ head, marker, nodeModulesOk: depsOk });
   return {
     branch,
