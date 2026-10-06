@@ -8,6 +8,10 @@
   },
   "scripts": {
     "dev": "node scripts/with-app-env.mjs vite dev --host 0.0.0.0 --port 8080",
+    "predev": "node scripts/sandbox-guard.mjs --recover --quiet || true",
+    "guard": "node scripts/sandbox-guard.mjs --watch --with-server",
+    "guard:recover": "node scripts/sandbox-guard.mjs --recover --with-server",
+    "guard:status": "node scripts/sandbox-guard.mjs --status",
     "build": "node scripts/with-app-env.mjs vite build && npm run db:migrate",
     "db:migrate": "node scripts/migrate.mjs",
     "build:dev": "node scripts/with-app-env.mjs vite build --mode development",

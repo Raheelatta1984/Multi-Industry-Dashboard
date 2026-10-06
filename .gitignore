@@ -1,0 +1,11 @@
+node_modules/
+.tanstack/
+.vercel/
+dist/
+*.log
+.DS_Store
+.grok/og-pending
+
+# sandbox-guard runtime state (self-healing mechanism)
+.sandbox-guard.json
+.sandbox-guard.log
