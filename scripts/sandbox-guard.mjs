@@ -97,9 +97,37 @@ export function planRecovery({ head, target, targetDescendsFromHead, headDescend
 // Small utilities
 // ---------------------------------------------------------------------------
 
-function run(cmd, args, timeoutMs = 30_000) {
-  const r = spawnSync(cmd, args, { cwd: ROOT, encoding: "utf8", timeout: timeoutMs, env: GIT_ENV });
+function run(cmd, args, timeoutMs = 30_000, env = GIT_ENV) {
+  const r = spawnSync(cmd, args, { cwd: ROOT, encoding: "utf8", timeout: timeoutMs, env });
   return { code: r.status ?? -1, out: (r.stdout ?? "").trim(), err: (r.stderr ?? "").trim() };
+}
+
+/**
+ * Fingerprint the whole worktree (tracked + untracked, gitignore-respecting)
+ * as a tree object WITHOUT touching the real index. After a recycle the real
+ * index is stale (reset to the scaffold commit), so `git diff <commit>` can
+ * report phantom differences — this comparison cannot.
+ */
+function worktreeTree() {
+  const tmpIndex = `/tmp/.sandbox-guard-index-${process.pid}`;
+  const env = { ...GIT_ENV, GIT_INDEX_FILE: tmpIndex };
+  try {
+    run("git", ["add", "-A"], 60_000, env);
+    return run("git", ["write-tree"], 10_000, env).out || null;
+  } finally {
+    try {
+      rmSync(tmpIndex);
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
+/** True when the worktree content matches the commit byte-for-byte. */
+function worktreeMatches(commit) {
+  const tree = worktreeTree();
+  if (!tree) return false;
+  return run("git", ["diff-tree", "-r", "--quiet", commit, tree]).code === 0;
 }
 
 function short(sha) {
@@ -322,11 +350,12 @@ export async function recover(opts = {}) {
   }
 
   if (plan.action === "reset") {
-    // SAFETY: only heal the pointer when the worktree already matches the
-    // target (the recycle signature: patchset == pushed commit). Real
-    // uncommitted work is never discarded — that needs --force.
-    const worktreeDiff = run("git", ["diff", target, "--stat"]).out;
-    if (worktreeDiff && !opts.force) {
+    // SAFETY: only heal the pointer when the worktree content already
+    // matches the remote commit (the recycle signature: patchset == pushed
+    // commit, only HEAD/index are stale). Real uncommitted work is never
+    // discarded — that needs --force.
+    const matches = worktreeMatches(target);
+    if (!matches && !opts.force) {
       logEvent(
         "uncommitted-work",
         `worktree differs from origin ${short(target)} — NOT auto-resetting; commit & push, or rerun with --force (snapshots to sandbox-rescue/* first)`,
@@ -334,7 +363,7 @@ export async function recover(opts = {}) {
       );
       return { ok: false, action: "uncommitted-work" };
     }
-    const rescue = worktreeDiff && head ? rescueSnapshot(head) : null;
+    const rescue = !matches && head ? rescueSnapshot(head) : null;
     const reset = run("git", ["reset", "--hard", target]);
     if (reset.code !== 0) {
       logEvent("reset-failed", reset.err.slice(0, 300), quiet);
