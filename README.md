@@ -32,6 +32,16 @@ npm run dev          # http://localhost:8080
 
 **Onboarding gate** (`onboarding.ts` + the chat in `/ingest`): every file passes an AI-guided interview before publish is unlocked — purpose (why the data is injected), company scope (single/multiple, auto-detected from the data), department scope (single/multiple, auto-detected), field-by-field mapping review, and a generated onboarding profile attached to lineage. The gate is enforced in the store (`publish()` refuses unconfirmed onboardings), not just in the UI.
 
+**Commit readiness and the onboarding log** (`preflight.ts`, `log.ts`, `store.ts`): `evaluateCommit` is the single source of truth for whether a file can land. It lists each condition, with a plain-language fix for every blocker: the interview answers, the target model, each required field for that model, the rows that would be committed, answers that disagree with the data (a single-company answer on a file that names five companies, for example), rows that look like duplicates of what is already in the warehouse, and data quality. `publish()` refuses while any blocker exists and logs the reasons. Every step is written to the onboarding log: intake, cleaning, target model, mapping, each interview answer, each mapping change, and each commit or refusal. The log is shown on `/ingest` and can be saved as text. The template route on `/data` writes an import log the same way.
+
+Rules a reviewer should know:
+
+- The company and department answers apply only to rows that have no company or department value of their own. Rows that name their own company keep it.
+- With "Correct / replace data", a row whose business key matches exactly one existing row updates that row in place. Other changed figures are reported as possible double counts rather than silently added.
+- Until a target model is chosen, columns are not guessed. The interview asks when the headers are not recognisable, and the mapping panel has a target-model selector.
+
+`npm test` runs `scripts/ingest-onboarding.test.mjs`, which drives the real ingest store through Vite's SSR loader.
+
 The prototype engine is deterministic on purpose (auditable, offline, instant); the production architecture swaps the matcher for an embeddings + LLM ensemble behind the same review gate — see the docs.
 
 ## Sandbox self-healing (`scripts/sandbox-guard.mjs`)

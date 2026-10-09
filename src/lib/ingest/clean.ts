@@ -4,7 +4,7 @@
  * inspect before publish (Alteryx-style, but generated instead of hand-built).
  */
 import type { CurrencyCode } from "../domain";
-import { detectDateConvention, normalizeHeader, parseDateLoose, stripNumber, TOTAL_RE } from "./profile";
+import { currencyFromHeader, detectDateConvention, normalizeHeader, parseDateLoose, stripNumber, TOTAL_RE } from "./profile";
 import type { CellValue, CleanStep, CleanedTable, ColumnProfile, SheetProfile } from "./types";
 
 export function cleanSheet(profile: SheetProfile): { table: CleanedTable; steps: CleanStep[] } {
@@ -135,6 +135,9 @@ export function cleanSheet(profile: SheetProfile): { table: CleanedTable; steps:
         currencyByColumn[name] = ccy;
         steps.push({ op: "strip_currency", column: name, currency: ccy, normalized });
       } else {
+        // A currency written in the header ("Takings (GBP)") still tells us the unit.
+        const fromHeader = type === "number" || type === "currency" ? currencyFromHeader(name) : null;
+        if (fromHeader) currencyByColumn[name] = fromHeader;
         steps.push({ op: "coerce_numbers", column: name, normalized, unparseable: bad });
       }
     }

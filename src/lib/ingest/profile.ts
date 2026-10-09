@@ -28,6 +28,14 @@ const CCY_SYMBOLS: Array<[string, CurrencyCode]> = [
 ];
 const TOTAL_RE = /^(grand\s+)?(total|totals|subtotal|sum)\b/i;
 
+/** "takings_gbp" / "Spend (AED)" → GBP / AED. Currency written in the header name only. */
+export function currencyFromHeader(header: string): CurrencyCode | null {
+  for (const token of header.toUpperCase().split(/[^A-Z]+/)) {
+    if (CCY_CODES.has(token)) return token as CurrencyCode;
+  }
+  return null;
+}
+
 function cell(v: unknown): CellValue {
   if (v === null || v === undefined || v === "") return null;
   if (v instanceof Date) return v.toISOString().slice(0, 10);

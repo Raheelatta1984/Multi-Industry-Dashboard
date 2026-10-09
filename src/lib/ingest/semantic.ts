@@ -81,11 +81,18 @@ const DOMAIN_FIELDS: Record<IngestDomain, { required: string[]; optional: string
 const CCY_SET = new Set<string>(CURRENCIES.map((c) => c.code));
 
 const REGION_MAP: Record<string, RegionId> = {
-  amer: "AMER", us: "AMER", usa: "AMER", "united states": "AMER", "united states of america": "AMER", canada: "AMER", na: "AMER", "north america": "AMER", mexico: "AMER",
+  amer: "AMER", us: "AMER", usa: "AMER", "u s": "AMER", "u s a": "AMER", "united states": "AMER", "united states of america": "AMER", canada: "AMER", na: "AMER", "north america": "AMER", mexico: "AMER", americas: "AMER",
+  "us east": "AMER", "us west": "AMER", "us central": "AMER", "us northeast": "AMER", "us southeast": "AMER", "us midwest": "AMER", "us northwest": "AMER", "us southwest": "AMER",
+  "usa east": "AMER", "usa west": "AMER", "east us": "AMER", "west us": "AMER", "us east coast": "AMER", "us west coast": "AMER",
   emea: "EMEA", europe: "EMEA", uk: "EMEA", "united kingdom": "EMEA", germany: "EMEA", france: "EMEA", uae: "EMEA", dubai: "EMEA", "saudi arabia": "EMEA", ksa: "EMEA", "south africa": "EMEA", "middle east": "EMEA", me: "EMEA", mea: "EMEA", turkey: "EMEA", netherlands: "EMEA",
+  qatar: "EMEA", kuwait: "EMEA", oman: "EMEA", bahrain: "EMEA", egypt: "EMEA", africa: "EMEA", nigeria: "EMEA", kenya: "EMEA", spain: "EMEA", italy: "EMEA", ireland: "EMEA", switzerland: "EMEA", belgium: "EMEA", poland: "EMEA", sweden: "EMEA",
   apac: "APAC", asia: "APAC", "asia pacific": "APAC", singapore: "APAC", india: "APAC", japan: "APAC", china: "APAC", australia: "APAC", nz: "APAC", "hong kong": "APAC", apj: "APAC",
-  latam: "LATAM", brazil: "LATAM", "latin america": "LATAM", argentina: "LATAM", chile: "LATAM", colombia: "LATAM",
+  "south korea": "APAC", korea: "APAC", malaysia: "APAC", indonesia: "APAC", thailand: "APAC", philippines: "APAC", vietnam: "APAC", "new zealand": "APAC", pakistan: "APAC", bangladesh: "APAC",
+  latam: "LATAM", brazil: "LATAM", "latin america": "LATAM", argentina: "LATAM", chile: "LATAM", colombia: "LATAM", peru: "LATAM", uruguay: "LATAM",
 };
+
+/** Words that clearly mean the United States, e.g. "US East", "U.S. West", "USA - Texas". */
+const US_TOKEN = /(^|[^a-z])(us|usa|u\.s\.a?\.?|united states)([^a-z]|$)/;
 
 const CHANNEL_MAP: Record<string, ChannelId> = {
   direct: "Direct", retail: "Direct", store: "Direct", stores: "Direct", "in-store": "Direct", b2b: "Direct",
@@ -169,7 +176,11 @@ function coerceFromMap<T>(raw: string, map: Record<string, T>): CoerceResult<T> 
 
 export function coerceRegion(v: CellValue): CoerceResult<RegionId> {
   if (typeof v !== "string") return { value: null, score: 0 };
-  return coerceFromMap(v, REGION_MAP);
+  const mapped = coerceFromMap(v, REGION_MAP);
+  if (mapped.value) return mapped;
+  // Unknown "US …" variants are still the United States, never the EMEA default.
+  if (US_TOKEN.test(v.trim().toLowerCase())) return { value: "AMER", score: 0.9, matched: "us" };
+  return mapped;
 }
 export function coerceChannel(v: CellValue): CoerceResult<ChannelId> {
   if (typeof v !== "string") return { value: null, score: 0 };
@@ -247,7 +258,18 @@ export function mapColumns(
   profile: ColumnProfile[],
   domain: IngestDomain | null,
 ): ColumnMapping[] {
-  const fields = domain ? DOMAIN_FIELDS[domain] : null;
+  // Without a target model there is no field list to map onto, so do not guess.
+  if (!domain) {
+    return table.headers.map((header) => ({
+      column: header,
+      target: null,
+      confidence: 0,
+      method: "none" as const,
+      reason: "choose a target model to map this column",
+      locked: false,
+    }));
+  }
+  const fields = DOMAIN_FIELDS[domain];
   // When the domain is known, only its own canonical fields are legal targets.
   const allowed = fields ? new Set<string>([...fields.required, ...fields.optional]) : null;
   const mappings: ColumnMapping[] = table.headers.map((header, index) => {
