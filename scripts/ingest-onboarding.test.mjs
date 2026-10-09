@@ -35,6 +35,7 @@ before(async () => {
     onboarding: await load("/src/lib/ingest/onboarding.ts"),
     semantic: await load("/src/lib/ingest/semantic.ts"),
     log: await load("/src/lib/ingest/log.ts"),
+    profile: await load("/src/lib/ingest/profile.ts"),
   };
 });
 
@@ -272,4 +273,10 @@ test("the log names the steps and the text export keeps the fixes", () => {
   const text = mods.log.logToText(ing.getState().logs);
   assert.match(text, /Target model set to Revenue \/ income by reviewer/);
   assert.match(text, /Fix: Map “takings_gbp” to Amount/);
+});
+
+test("month-and-year periods read as the first day of that month", () => {
+  assert.equal(mods.profile.parseDateLoose("06/2026"), "2026-06-01");
+  assert.equal(mods.profile.parseDateLoose("6-2026"), "2026-06-01");
+  assert.equal(mods.profile.parseDateLoose("13/2026"), null, "month 13 is not a month");
 });

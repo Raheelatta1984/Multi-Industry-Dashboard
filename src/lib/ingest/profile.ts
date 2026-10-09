@@ -48,7 +48,7 @@ function cell(v: unknown): CellValue {
 function looksLikeDate(v: CellValue): boolean {
   if (typeof v === "number") return v > 20000 && v < 60000; // Excel serial
   if (typeof v !== "string" || !v) return false;
-  return /\d{4}-\d{2}-\d{2}/.test(v) || /^\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}$/.test(v) ||
+  return /\d{4}-\d{2}-\d{2}/.test(v) || /^\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}$/.test(v) || /^(0?[1-9]|1[0-2])[/-]\d{4}$/.test(v) ||
     /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[ -]?\d{0,2},?\s*\d{0,4}$/i.test(v) ||
     /^(q[1-4])[ -]?\d{0,4}$/i.test(v) || /^\d{4}-\d{2}$/.test(v);
 }
@@ -82,6 +82,11 @@ function parseDateLoose(v: CellValue, convention: DateConvention = "mdy"): strin
   const s = v.trim();
   const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  // "06/2026" or "06-2026": a month and a year. Periods start on the first of the month.
+  const monthYear = s.match(/^(0?[1-9]|1[0-2])[/-](\d{4})$/);
+  if (monthYear && Number(monthYear[1]) >= 1 && Number(monthYear[1]) <= 12) {
+    return `${monthYear[2]}-${String(monthYear[1]).padStart(2, "0")}-01`;
+  }
   const q = s.match(/^q([1-4])\s*-?\s*(\d{4})?$/i);
   if (q) {
     const year = q[2] ? Number(q[2]) : 2026;
