@@ -127,7 +127,14 @@ export type PublishResult = {
   mappingConfidence: number;
   qualityScore: number;
   report: { added: number; updated: number; skipped: number };
+  /** Boards fed by THIS file's rows (not the whole warehouse). */
   boardsLit: number;
+  /** Source rows that could not be committed, grouped by reason. */
+  rowsSkipped: Array<{ reason: string; count: number }>;
+  /** Values that fell back to a default (e.g. unknown region → EMEA), grouped. */
+  defaultsApplied: Array<{ column: string; from: string; to: string; count: number }>;
+  /** Rows that replaced an existing warehouse row (correction purpose only). */
+  rowsReplaced: number;
 };
 
 export type IngestRun = {

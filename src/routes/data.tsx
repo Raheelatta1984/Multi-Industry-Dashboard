@@ -5,6 +5,8 @@ import { generateSampleWorkbook } from "@/lib/sample-data";
 import { workbookStats } from "@/lib/selectors";
 import { fxMap } from "@/lib/currency";
 import { useAppStore } from "@/lib/store";
+import { useIngestStore } from "@/lib/ingest/store";
+import { ActivityLog } from "@/components/onboarding/activity-log";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -33,6 +35,7 @@ function DataPage() {
   async function onFile(file: File) {
     setBusy(true);
     setMessage(null);
+    const log = useIngestStore.getState().log;
     try {
       const buf = await file.arrayBuffer();
       const parsed = parseWorkbook(buf);
@@ -40,8 +43,41 @@ function DataPage() {
       setMessage(
         `Patched ${file.name}: +${report.added} new, ~${report.updated} updated, ${report.skipped} unchanged.`,
       );
+      log({
+        fileName: file.name,
+        level: parsed.issues.length ? "warn" : "success",
+        stage: "import",
+        title: `Imported “${file.name}” into the warehouse (template route)`,
+        detail: parsed.issues.length
+          ? `${parsed.issues.length} thing${parsed.issues.length === 1 ? "" : "s"} to check, listed below.`
+          : "Every sheet was read and merged by row id. Unchanged rows were left alone.",
+        facts: [
+          { label: "Added", value: String(report.added) },
+          { label: "Updated", value: String(report.updated) },
+          { label: "Unchanged", value: String(report.skipped) },
+          { label: "Sheets", value: String(new Set(report.sheetsTouched).size) },
+        ],
+      });
+      for (const issue of parsed.issues) {
+        log({
+          fileName: file.name,
+          level: "warn",
+          stage: "import",
+          title: `${issue.sheet}: ${issue.message}`,
+          fix: "Rename the sheet to match the template (Revenue or Sales, Expenses, and so on), then re-upload.",
+        });
+      }
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Could not read that workbook.");
+      const message = err instanceof Error ? err.message : "Could not read that workbook.";
+      setMessage(message);
+      log({
+        fileName: file.name,
+        level: "error",
+        stage: "import",
+        title: `Could not import “${file.name}”`,
+        detail: message,
+        fix: "Download the template on this page, keep its sheet names and header row, fill it in, and drop it here again.",
+      });
     } finally {
       setBusy(false);
     }
@@ -103,6 +139,12 @@ function DataPage() {
       </Card>
 
       {message && <p className="text-sm text-silver">{message}</p>}
+
+      <ActivityLog
+        title="Template import log"
+        stages={["import"]}
+        emptyText="Nothing imported yet. Each template or workbook you drop here is logged with what changed and how to fix anything it could not read."
+      />
 
       <div className="flex flex-wrap items-center gap-3">
         <Button variant="outline" onClick={downloadSample}>

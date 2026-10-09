@@ -14,6 +14,7 @@ import type {
   CellValue,
   CleanedTable,
   ColumnMapping,
+  IngestDomain,
   IngestRun,
   OnboardingAnswers,
   OnboardingProfile,
@@ -27,6 +28,21 @@ export const PURPOSE_OPTIONS: Array<{ id: Purpose; label: string; blurb: string 
   { id: "historical_backfill", label: "Historical backfill", blurb: "older periods missing from the warehouse" },
   { id: "replace_data", label: "Correct / replace data", blurb: "fixing numbers that were already committed" },
 ];
+
+/** The data types the warehouse can onboard, in plain language. */
+export const DOMAIN_OPTIONS: Array<{ id: IngestDomain; label: string; blurb: string }> = [
+  { id: "revenue", label: "Revenue / income", blurb: "income lines by date, company, product or channel" },
+  { id: "expenses", label: "Expenses / opex", blurb: "spend lines by vendor, category and cost centre" },
+  { id: "sales", label: "Sales (units & prices)", blurb: "transactions with quantity, unit price and SKU" },
+  { id: "assets", label: "Fixed assets", blurb: "asset register with cost, book value and status" },
+  { id: "licenses", label: "Software licences", blurb: "licences with seats, unit cost and renewal dates" },
+  { id: "upcoming", label: "Upcoming payments", blurb: "scheduled or committed payments with due dates" },
+  { id: "turnover", label: "Inventory & COGS", blurb: "opening and closing stock and cost of goods sold" },
+];
+
+export function domainLabel(id: IngestDomain | null | undefined): string {
+  return DOMAIN_OPTIONS.find((d) => d.id === id)?.label ?? "—";
+}
 
 export const PURPOSE_LABELS: Record<Purpose, string> = Object.fromEntries(
   PURPOSE_OPTIONS.map((o) => [o.id, o.label]),
