@@ -14,6 +14,7 @@ import { Route as CatalogRouteImport } from './routes/catalog'
 import { Route as DataRouteImport } from './routes/data'
 import { Route as FxRouteImport } from './routes/fx'
 import { Route as IngestRouteImport } from './routes/ingest'
+import { Route as ScalabilityRouteImport } from './routes/scalability'
 import { Route as WarehouseRouteImport } from './routes/warehouse'
 import { Route as BoardIdRouteImport } from './routes/board.$id'
 
@@ -42,6 +43,11 @@ const IngestRoute = IngestRouteImport.update({
   path: '/ingest',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ScalabilityRoute = ScalabilityRouteImport.update({
+  id: '/scalability',
+  path: '/scalability',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const WarehouseRoute = WarehouseRouteImport.update({
   id: '/warehouse',
   path: '/warehouse',
@@ -59,6 +65,7 @@ export interface FileRoutesByFullPath {
   '/data': typeof DataRoute
   '/fx': typeof FxRoute
   '/ingest': typeof IngestRoute
+  '/scalability': typeof ScalabilityRoute
   '/warehouse': typeof WarehouseRoute
   '/board/$id': typeof BoardIdRoute
 }
@@ -68,6 +75,7 @@ export interface FileRoutesByTo {
   '/data': typeof DataRoute
   '/fx': typeof FxRoute
   '/ingest': typeof IngestRoute
+  '/scalability': typeof ScalabilityRoute
   '/warehouse': typeof WarehouseRoute
   '/board/$id': typeof BoardIdRoute
 }
@@ -78,16 +86,31 @@ export interface FileRoutesById {
   '/data': typeof DataRoute
   '/fx': typeof FxRoute
   '/ingest': typeof IngestRoute
+  '/scalability': typeof ScalabilityRoute
   '/warehouse': typeof WarehouseRoute
   '/board/$id': typeof BoardIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/catalog' | '/data' | '/fx' | '/ingest' | '/warehouse' | '/board/$id'
+    | '/'
+    | '/catalog'
+    | '/data'
+    | '/fx'
+    | '/ingest'
+    | '/scalability'
+    | '/warehouse'
+    | '/board/$id'
   fileRoutesByTo: FileRoutesByTo
   to:
-    '/' | '/catalog' | '/data' | '/fx' | '/ingest' | '/warehouse' | '/board/$id'
+    | '/'
+    | '/catalog'
+    | '/data'
+    | '/fx'
+    | '/ingest'
+    | '/scalability'
+    | '/warehouse'
+    | '/board/$id'
   id:
     | '__root__'
     | '/'
@@ -95,6 +118,7 @@ export interface FileRouteTypes {
     | '/data'
     | '/fx'
     | '/ingest'
+    | '/scalability'
     | '/warehouse'
     | '/board/$id'
   fileRoutesById: FileRoutesById
@@ -105,6 +129,7 @@ export interface RootRouteChildren {
   DataRoute: typeof DataRoute
   FxRoute: typeof FxRoute
   IngestRoute: typeof IngestRoute
+  ScalabilityRoute: typeof ScalabilityRoute
   WarehouseRoute: typeof WarehouseRoute
   BoardIdRoute: typeof BoardIdRoute
 }
@@ -146,6 +171,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IngestRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/scalability': {
+      id: '/scalability'
+      path: '/scalability'
+      fullPath: '/scalability'
+      preLoaderRoute: typeof ScalabilityRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/warehouse': {
       id: '/warehouse'
       path: '/warehouse'
@@ -169,6 +201,7 @@ const rootRouteChildren: RootRouteChildren = {
   DataRoute: DataRoute,
   FxRoute: FxRoute,
   IngestRoute: IngestRoute,
+  ScalabilityRoute: ScalabilityRoute,
   WarehouseRoute: WarehouseRoute,
   BoardIdRoute: BoardIdRoute,
 }
