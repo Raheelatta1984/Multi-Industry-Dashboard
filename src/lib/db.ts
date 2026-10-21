@@ -85,18 +85,121 @@ function toSql(run: Run): Sql {
   return sql;
 }
 
-function createNeonSql(): Promise<Sql> {
+// ---------------------------------------------------------------------------
+// Neon + PgBouncer + Read Replicas + Memcached integration
+// ---------------------------------------------------------------------------
+
+async function createNeonSql(): Promise<Sql> {
   globalRef.__pgSqlPromise__ ??= (async () => {
-    // Regular Postgres driver: node-postgres (`pg`) — works directly with Neon's
-    // pooled endpoint. One pool per process; warm serverless instances reuse it.
     const { Pool, types } = await import("pg");
     types.setTypeParser(OID_INT8, Number);
     types.setTypeParser(OID_DATE, identity);
     types.setTypeParser(OID_INTERVAL, identity);
-    const pool = new Pool({ connectionString: databaseUrl });
+
+    // Lazy imports to avoid circular deps - these modules are server-only
+    const { getPgbouncerConfig, getPgbouncerPool } = await import("./db/pgbouncer");
+    const { getReplicaConfig, isReadOnlyQuery, getReplicaPool } = await import("./db/replicas");
+    const { getCacheConfig, getMemcachedClient, buildCacheKey } = await import("./cache/memcached");
+
+    const pgbouncerCfg = getPgbouncerConfig();
+    const replicaCfg = getReplicaConfig();
+    const cacheCfg = getCacheConfig();
+
+    let primaryPool: import("pg").Pool | null = null;
+
+    // Try PgBouncer pool first if enabled
+    if (pgbouncerCfg.enabled) {
+      try {
+        const pgbPool = await getPgbouncerPool();
+        if (pgbPool) {
+          primaryPool = pgbPool;
+          console.log(`[db] Using PgBouncer pool (mode=${pgbouncerCfg.poolMode}, max=${pgbouncerCfg.maxPoolSize})`);
+        }
+      } catch (e) {
+        console.warn("[db] PgBouncer pool init failed, falling back to direct pool:", e);
+      }
+    }
+
+    // Fallback to direct primary pool
+    if (!primaryPool) {
+      primaryPool = new Pool({ connectionString: databaseUrl });
+      if (pgbouncerCfg.enabled) {
+        console.log("[db] PgBouncer enabled but pool not available, using direct Neon pool");
+      }
+    }
+
+    const memcachedClient = cacheCfg.enabled ? getMemcachedClient() : null;
+
     return toSql(async <T>(text: string, params: unknown[]) => {
-      const res = await pool.query(text, params);
-      return res.rows as T[];
+      const readOnly = isReadOnlyQuery(text);
+      const useCache = cacheCfg.enabled && readOnly && memcachedClient;
+      const useReplica = replicaCfg.routingEnabled && readOnly && replicaCfg.replicaUrls.length > 0;
+
+      // --- Memcached look-aside for reads ---
+      if (useCache) {
+        try {
+          const cacheKey = buildCacheKey("sql", { q: text, p: params });
+          const cached = await memcachedClient!.get<T[]>(cacheKey);
+          if (cached) {
+            // console.debug(`[cache] HIT for ${text.slice(0, 50)}`);
+            return cached;
+          }
+        } catch (e) {
+          console.warn("[cache] get failed:", e);
+        }
+      }
+
+      // --- Replica routing for reads ---
+      if (useReplica) {
+        try {
+          const replicaPool = await getReplicaPool();
+          if (replicaPool) {
+            const res = await replicaPool.query(text, params);
+            const rows = res.rows as T[];
+
+            // Populate cache
+            if (useCache) {
+              try {
+                const cacheKey = buildCacheKey("sql", { q: text, p: params });
+                await memcachedClient!.set(cacheKey, rows, 60); // 60s for replica reads
+              } catch {}
+            }
+
+            return rows;
+          }
+        } catch (err) {
+          console.warn("[db] replica query failed, falling back to primary:", err);
+        }
+      }
+
+      // --- Primary query (writes or fallback) ---
+      const res = await primaryPool!.query(text, params);
+      const rows = res.rows as T[];
+
+      // Populate cache for read queries from primary too
+      if (useCache) {
+        try {
+          const cacheKey = buildCacheKey("sql", { q: text, p: params });
+          await memcachedClient!.set(cacheKey, rows, 60);
+        } catch {}
+      }
+
+      // On writes, invalidate relevant cache patterns
+      if (!readOnly && useCache) {
+        try {
+          // Simple invalidation: if query touches a table, invalidate that table's cache
+          // We use pattern matching for simplicity
+          const lower = text.toLowerCase();
+          if (lower.includes("revenue")) await memcachedClient!.invalidatePattern("sql:*revenue*");
+          if (lower.includes("expenses")) await memcachedClient!.invalidatePattern("sql:*expenses*");
+          if (lower.includes("sales")) await memcachedClient!.invalidatePattern("sql:*sales*");
+          if (lower.includes("dashboard") || lower.includes("board")) {
+            await memcachedClient!.invalidatePattern("board:*");
+          }
+        } catch {}
+      }
+
+      return rows;
     });
   })().catch((err) => {
     globalRef.__pgSqlPromise__ = undefined;
@@ -183,6 +286,11 @@ async function createSql(): Promise<Sql> {
  * Get the shared, **server-only** SQL client. Neon when `DATABASE_URL` is set,
  * otherwise the local PGLite fallback. Memoized — safe to call per request.
  *
+ * Enhanced with:
+ *   - PgBouncer pooling (if PGBOUNCER_ENABLED or PGBOUNCER_URL set)
+ *   - Read replica routing (if DATABASE_REPLICA_URLS set)
+ *   - Memcached caching for reads (if enabled)
+ *
  * Schema comes from `migrations/*.sql`, auto-applied before the first query on
  * both backends — define tables there, never inline in server functions.
  */
@@ -236,3 +344,10 @@ if (typeof window === "undefined" && dbSource === "pglite") {
     throw err;
   });
 }
+
+// Re-export enhanced modules for convenience
+export { getPgbouncerConfig, getPgbouncerPool, getPgbouncerPoolOptions } from "./db/pgbouncer";
+export { getReplicaConfig, isReadOnlyQuery, queryWithRouting, getPrimaryPool, getReplicaPool } from "./db/replicas";
+export { getCacheConfig, getMemcachedClient, dashboardCache, queryCache, cachedQuery, invalidateCache } from "./cache/memcached";
+export { nextId, nextIdBigInt, parseId, sortIds, getShardFromId } from "./id/next-id";
+export { getShardForImage, getMachineForShard, resolveImageLocation, getMachineMap, getShardDistribution } from "./storage/image-sharding";
