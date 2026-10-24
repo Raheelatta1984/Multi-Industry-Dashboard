@@ -1,16 +1,34 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { getGuardSnapshot, probeGuard } from "@/lib/cache/guard-api";
+import type { GuardProbeResult, GuardSnapshot } from "@/lib/cache/guard-types";
 
 export const Route = createFileRoute("/scalability")({
   component: ScalabilityPage,
 });
 
+type Snapshot = GuardSnapshot;
+type Probe = GuardProbeResult;
+
+function Stat({ label, value, hint }: { label: string; value: number | string; hint?: string }) {
+  return (
+    <div className="rounded-md border border-border bg-card px-3 py-2">
+      <div className="text-[11px] tracking-wide text-muted-foreground uppercase">{label}</div>
+      <div className="font-display text-xl leading-tight">{value}</div>
+      {hint ? <div className="text-[11px] text-muted-foreground">{hint}</div> : null}
+    </div>
+  );
+}
+
 function ScalabilityPage() {
   const [ids, setIds] = useState<string[]>([]);
   const [shardDemo, setShardDemo] = useState<{ imageId: string; shard: number; machine: string; path: string } | null>(null);
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [probe, setProbe] = useState<Probe | null>(null);
+  const [probing, setProbing] = useState(false);
 
   // Mock data for demo (client-side, no DB needed)
   const mockPgbouncer = {
@@ -75,13 +93,42 @@ function ScalabilityPage() {
     setShardDemo({ imageId, shard, machine, path });
   };
 
+  const refresh = useCallback(async () => {
+    try {
+      setSnapshot(await getGuardSnapshot());
+    } catch {
+      // The panel is informational — a failed poll must not break the page.
+    }
+  }, []);
+
+  const runProbe = useCallback(async () => {
+    setProbing(true);
+    try {
+      setProbe(await probeGuard());
+      await refresh();
+    } catch {
+      setProbe(null);
+    } finally {
+      setProbing(false);
+    }
+  }, [refresh]);
+
+  useEffect(() => {
+    void refresh();
+    const timer = setInterval(() => void refresh(), 4000);
+    return () => clearInterval(timer);
+  }, [refresh]);
+
+  const bloomEntries = Object.entries(snapshot?.bloom ?? {});
+
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 p-6 space-y-6">
       <div className="max-w-6xl mx-auto space-y-6">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Scalability Architecture</h1>
           <p className="text-zinc-500 mt-2">
-            PgBouncer · Read Replicas · Memcached · Logical Shards + Machine Map · 64-bit next_id (41-13-10)
+            PgBouncer · Read Replicas · Memcached · Request Guard · Logical Shards + Machine Map · 64-bit next_id
+            (41-13-10)
           </p>
         </div>
 
@@ -91,7 +138,7 @@ function ScalabilityPage() {
               <CardTitle className="flex items-center gap-2">
                 PgBouncer <Badge variant="outline">Neon</Badge>
               </CardTitle>
-               <div class="text-xs text-zinc-500">Transaction pooling for high concurrency</div>
+              <div className="text-xs text-zinc-500">Transaction pooling for high concurrency</div>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
               <div className="flex justify-between"><span>Enabled</span><span>{mockPgbouncer.enabled ? "Yes" : "No (dev fallback)"}</span></div>
@@ -112,7 +159,7 @@ function ScalabilityPage() {
               <CardTitle className="flex items-center gap-2">
                 Read Replicas <Badge variant="outline">Scale Reads</Badge>
               </CardTitle>
-               <div class="text-xs text-zinc-500">Route SELECTs to replicas, writes to primary</div>
+              <div className="text-xs text-zinc-500">Route SELECTs to replicas, writes to primary</div>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
               <div><span className="font-medium">Primary:</span> {mockReplicas.primary}</div>
@@ -135,7 +182,7 @@ function ScalabilityPage() {
               <CardTitle className="flex items-center gap-2">
                 Memcached <Badge variant="outline">Cache</Badge>
               </CardTitle>
-               <div class="text-xs text-zinc-500">Look-aside cache for hot dashboards</div>
+              <div className="text-xs text-zinc-500">Look-aside cache for hot dashboards</div>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
               <div className="flex justify-between"><span>Enabled</span><span>{mockCache.enabled ? "Yes" : "No"}</span></div>
@@ -157,7 +204,7 @@ function ScalabilityPage() {
               <CardTitle className="flex items-center gap-2">
                 Image Sharding <Badge variant="outline">1024 shards</Badge>
               </CardTitle>
-               <div class="text-xs text-zinc-500">Logical shards + machine map</div>
+              <div className="text-xs text-zinc-500">Logical shards + machine map</div>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
               <div className="grid grid-cols-2 gap-2">
@@ -185,9 +232,84 @@ function ScalabilityPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              Distributed IDs <Badge>64-bit: 41-13-10</Badge>
+              Request Guard <Badge variant="outline">Rate limit · Negative cache · Bloom filter</Badge>
             </CardTitle>
-             <div class="text-xs text-zinc-500">next_id with timestamp + shard + counter, sortable, no clash</div>
+            <div className="text-xs text-zinc-500">
+              Live counters from the server. Every request is rate limited; misses are answered from the
+              negative cache or the Bloom filter before the database sees them.
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Stat label="Requests" value={snapshot?.http.requests ?? 0} hint="through the HTTP guard" />
+              <Stat label="Rate limited" value={snapshot?.http.rateLimited ?? 0} hint="429s served" />
+              <Stat label="404s remembered" value={snapshot?.http.negativesMarked ?? 0} hint="negative cache" />
+              <Stat label="404s short-circuited" value={snapshot?.http.negativeHits ?? 0} hint="no routing at all" />
+              <Stat label="Queries" value={snapshot?.db.queries ?? 0} hint="seen by the DB guard" />
+              <Stat label="DB round trips saved" value={snapshot?.db.dbQueriesSaved ?? 0} hint="negative cache + bloom" />
+              <Stat label="Bloom filter hits" value={snapshot?.db.bloomHits ?? 0} hint="definitely absent" />
+              <Stat label="Coalesced" value={snapshot?.singleFlight.coalesced ?? 0} hint="identical reads merged" />
+            </div>
+
+            {bloomEntries.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-zinc-500">
+                      <th className="py-1 pr-4 font-medium">Bloom index</th>
+                      <th className="py-1 pr-4 font-medium">Keys</th>
+                      <th className="py-1 pr-4 font-medium">Bits</th>
+                      <th className="py-1 pr-4 font-medium">Hashes</th>
+                      <th className="py-1 pr-4 font-medium">False positives</th>
+                    </tr>
+                  </thead>
+                  <tbody className="font-mono">
+                    {bloomEntries.map(([name, row]) => (
+                      <tr key={name} className="border-t border-border">
+                        <td className="py-1 pr-4">{name}</td>
+                        <td className="py-1 pr-4">{row.inserted ?? 0}</td>
+                        <td className="py-1 pr-4">{row.bitCount ?? 0}</td>
+                        <td className="py-1 pr-4">{row.hashCount ?? 0}</td>
+                        <td className="py-1 pr-4">
+                          {((row.falsePositiveRate ?? 0) * 100).toFixed(2)}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-3">
+              <Button size="sm" onClick={runProbe} disabled={probing}>
+                {probing ? "Probing…" : "Probe: look up a missing key 3×"}
+              </Button>
+              {probe && (
+                <span className="text-xs text-zinc-500">
+                  {probe.table ? (
+                    <>
+                      <span className="font-mono">{probe.table}</span> ·{" "}
+                      <span className="font-mono">{probe.key}</span> → {probe.sources.join(" → ")} ·{" "}
+                      {probe.summary}
+                    </>
+                  ) : (
+                    probe.summary
+                  )}
+                </span>
+              )}
+            </div>
+
+            <div className="bg-zinc-100 dark:bg-zinc-900 p-3 rounded text-xs font-mono space-y-1">
+              <div>RATE_LIMIT_MAX=300 · RATE_LIMIT_WINDOW_SEC=60 · RATE_LIMIT_AUTH_MAX=30</div>
+              <div>NEGATIVE_CACHE_TTL_SEC=30 · BLOOM_FILTER_MAX_SCAN_ROWS=50000</div>
+              <div>DB_RATE_LIMIT_MAX=600 · DB_MAX_CONCURRENT_QUERIES=20</div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Distributed IDs</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid md:grid-cols-3 gap-4 text-sm">
@@ -249,6 +371,11 @@ function ScalabilityPage() {
             <div>       - Check memcached (hit? return)</div>
             <div>       - Else query replica (round-robin)</div>
             <div>       - Populate cache (60-120s TTL)</div>
+            <div>  -&gt; Guarded reads (src/lib/cache/db-guard.ts):</div>
+            <div>       - Positive cache hit? return</div>
+            <div>       - Negative marker? return empty (no DB round trip)</div>
+            <div>       - Bloom filter says "definitely absent"? return empty</div>
+            <div>       - Else query DB (rate limited, concurrency limited)</div>
           </CardContent>
         </Card>
       </div>

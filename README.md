@@ -19,6 +19,7 @@ npm run dev          # http://localhost:8080
 | `/catalog`, `/board/$id` | 150+ department boards, all driven by the same warehouse |
 | `/data` | The legacy fixed-template Excel studio (still supported) |
 | `/fx` | FX table and exposure |
+| `/scalability` | The load-protection layer: rate limiting, negative cache, Bloom filter — with live counters and a probe |
 | Header → **Ask AI** | Natural-language Q&A over the warehouse (demo engine) |
 
 ## How the AI pipeline works
@@ -43,6 +44,17 @@ Rules a reviewer should know:
 `npm test` runs `scripts/ingest-onboarding.test.mjs`, which drives the real ingest store through Vite's SSR loader.
 
 The prototype engine is deterministic on purpose (auditable, offline, instant); the production architecture swaps the matcher for an embeddings + LLM ensemble behind the same review gate — see the docs.
+
+## Load protection (request guard)
+
+Every request passes through a guard that keeps pointless work away from the database:
+
+- **Rate limiting** — a token bucket per client (page/API, static assets and `/api/auth` have their own budgets). Over budget → `429` with `Retry-After`, before the request reaches the router.
+- **Negative caching** — an empty query result and a `404` are remembered for a short while, so the repeat of a miss costs nothing. A write invalidates the markers of the table it touched.
+- **Bloom filters** — a point lookup for a key that is definitely not there is answered from a probabilistic index of the table's primary keys, without a database round trip. The filter is only believed when no row can have been inserted after its snapshot.
+- **Coalescing + concurrency limits** — identical concurrent reads are merged into one query, and the number of queries in flight is capped so a burst cannot drain the connection pool.
+
+See [`docs/scalability.md`](docs/scalability.md#3-request-guard--rate-limiting-negative-cache-bloom-filter) for the design and the env knobs; `/scalability` shows the live counters.
 
 ## Sandbox self-healing (`scripts/sandbox-guard.mjs`)
 
