@@ -1,7 +1,7 @@
 /**
  * Scalability Architecture Overview
  *
- * This file documents how the four requested scalability features work together.
+ * This file documents how the requested scalability features work together.
  *
  * 1. PgBouncer (Neon + PgBouncer)
  *    - Neon already has a pooled endpoint, but PgBouncer adds transaction pooling
@@ -17,6 +17,17 @@
  *    - Cache-aside: check cache -> miss -> query replica/primary -> populate
  *    - On writes, invalidate relevant cache keys
  *    - See src/lib/db/replicas.ts and src/lib/cache/memcached.ts
+ *
+ * 2b. Request Guard (rate limiting, negative cache, Bloom filter)
+ *    - Every request is rate limited (token bucket per client -> 429 + Retry-After)
+ *    - Empty query results and 404s are remembered (negative cache), so a
+ *      repeated miss never reaches the database; a write clears the markers
+ *    - Point lookups are answered from a Bloom filter of the table's primary
+ *      keys when the key is definitely absent (the filter is only believed
+ *      when no row can have been inserted after its snapshot)
+ *    - Identical concurrent reads are coalesced into one query; queries are
+ *      rate limited and concurrency limited
+ *    - See src/lib/cache/db-guard.ts and src/lib/cache/request-guard.server.ts
  *
  * 3. Logical Shards + Machine Map for Images
  *    - Images sharded across 1024 logical shards (fixed)
@@ -45,16 +56,28 @@
  *        - Else query replica (round-robin)
  *        - Populate cache
  *
+ * Read path with the request guard:
+ *   Request
+ *     -> rate limited per client (429 before anything else)
+ *     -> positive cache hit? return
+ *     -> negative marker? return empty (no database round trip)
+ *     -> point lookup + Bloom filter says "definitely absent"? return empty
+ *     -> database (rate limited, concurrency limited, coalesced)
+ *
  * Env summary:
  *   DATABASE_URL - primary Neon URL
  *   PGBOUNCER_URL / PGBOUNCER_ENABLED / PGBOUNCER_POOL_MODE - pgbouncer
  *   DATABASE_REPLICA_URLS / READ_REPLICA_URLS - replicas
  *   MEMCACHED_SERVERS / MEMCACHED_URL / MEMCACHED_ENABLED - cache
+ *   RATE_LIMIT_MAX / RATE_LIMIT_WINDOW_SEC / RATE_LIMIT_AUTH_MAX - http rate limit
+ *   NEGATIVE_CACHE_ENABLED / NEGATIVE_CACHE_TTL_SEC - negative cache
+ *   BLOOM_FILTER_ENABLED / BLOOM_FILTER_MAX_SCAN_ROWS - bloom filter
+ *   DB_RATE_LIMIT_MAX / DB_MAX_CONCURRENT_QUERIES - database load
  *   IMAGE_LOGICAL_SHARDS / IMAGE_PHYSICAL_MACHINES / IMAGE_SHARD_MAP_VERSION - image sharding
  *   ID_SHARD_ID - default shard for ID generator
  */
 
-export const ARCHITECTURE_VERSION = "1.0.0";
+export const ARCHITECTURE_VERSION = "1.1.0";
 
 export const SCALABILITY_FEATURES = {
   pgbouncer: {
@@ -71,6 +94,32 @@ export const SCALABILITY_FEATURES = {
     enabled: true,
     file: "src/lib/cache/memcached.ts",
     env: ["MEMCACHED_SERVERS", "MEMCACHED_URL", "MEMCACHED_ENABLED", "MEMCACHED_DEFAULT_TTL"],
+  },
+  requestGuard: {
+    enabled: true,
+    files: [
+      "src/lib/cache/request-guard.server.ts",
+      "src/lib/cache/db-guard.ts",
+      "src/lib/cache/bloom.ts",
+      "src/lib/cache/negative.ts",
+      "src/lib/cache/rate-limit.ts",
+      "src/lib/cache/single-flight.ts",
+    ],
+    env: [
+      "RATE_LIMIT_ENABLED",
+      "RATE_LIMIT_MAX",
+      "RATE_LIMIT_WINDOW_SEC",
+      "RATE_LIMIT_STATIC_MAX",
+      "RATE_LIMIT_AUTH_MAX",
+      "NEGATIVE_CACHE_ENABLED",
+      "NEGATIVE_CACHE_TTL_SEC",
+      "BLOOM_FILTER_ENABLED",
+      "BLOOM_FILTER_MAX_SCAN_ROWS",
+      "BLOOM_FILTER_TRUST_LOCAL",
+      "DB_RATE_LIMIT_MAX",
+      "DB_RATE_LIMIT_WINDOW_SEC",
+      "DB_MAX_CONCURRENT_QUERIES",
+    ],
   },
   imageSharding: {
     enabled: true,

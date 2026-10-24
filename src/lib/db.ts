@@ -1,4 +1,5 @@
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
+import { isReadOnlyQuery } from "./db/replicas";
 
 /** Which database backend is active. */
 export type DbSource = "neon" | "pglite";
@@ -98,12 +99,10 @@ async function createNeonSql(): Promise<Sql> {
 
     // Lazy imports to avoid circular deps - these modules are server-only
     const { getPgbouncerConfig, getPgbouncerPool } = await import("./db/pgbouncer");
-    const { getReplicaConfig, isReadOnlyQuery, getReplicaPool } = await import("./db/replicas");
-    const { getCacheConfig, getMemcachedClient, buildCacheKey } = await import("./cache/memcached");
+    const { getReplicaConfig, getReplicaPool } = await import("./db/replicas");
 
     const pgbouncerCfg = getPgbouncerConfig();
     const replicaCfg = getReplicaConfig();
-    const cacheCfg = getCacheConfig();
 
     let primaryPool: import("pg").Pool | null = null;
 
@@ -128,76 +127,54 @@ async function createNeonSql(): Promise<Sql> {
       }
     }
 
-    const memcachedClient = cacheCfg.enabled ? getMemcachedClient() : null;
-
     return toSql(async <T>(text: string, params: unknown[]) => {
       const readOnly = isReadOnlyQuery(text);
-      const useCache = cacheCfg.enabled && readOnly && memcachedClient;
       const useReplica = replicaCfg.routingEnabled && readOnly && replicaCfg.replicaUrls.length > 0;
 
-      // --- Memcached look-aside for reads ---
-      if (useCache) {
-        try {
-          const cacheKey = buildCacheKey("sql", { q: text, p: params });
-          const cached = await memcachedClient!.get<T[]>(cacheKey);
-          if (cached) {
-            // console.debug(`[cache] HIT for ${text.slice(0, 50)}`);
-            return cached;
-          }
-        } catch (e) {
-          console.warn("[cache] get failed:", e);
-        }
-      }
+      // The unguarded runners. The guard's own metadata queries (primary key
+      // lookup, row count, key scan) MUST NOT re-enter the guard — that would
+      // recurse forever — so they go straight to the primary.
+      const meta = async (queryText: string, queryParams: unknown[]): Promise<T[]> => {
+        const res = await primaryPool!.query(queryText, queryParams);
+        return res.rows as T[];
+      };
 
-      // --- Replica routing for reads ---
-      if (useReplica) {
-        try {
-          const replicaPool = await getReplicaPool();
-          if (replicaPool) {
-            const res = await replicaPool.query(text, params);
-            const rows = res.rows as T[];
-
-            // Populate cache
-            if (useCache) {
+      // --- Reads: negative cache, Bloom filter and rate limiting live in the
+      // guard, so a miss that can be answered from a cache never reaches the
+      // database at all. ---
+      if (readOnly) {
+        const { guardedQuery } = await import("./cache/db-guard");
+        const result = await guardedQuery<T>({
+          sql: text,
+          params,
+          meta,
+          run: async (queryText, queryParams) => {
+            // Replica routing for reads
+            if (useReplica) {
               try {
-                const cacheKey = buildCacheKey("sql", { q: text, p: params });
-                await memcachedClient!.set(cacheKey, rows, 60); // 60s for replica reads
-              } catch {}
+                const replicaPool = await getReplicaPool();
+                if (replicaPool) {
+                  const res = await replicaPool.query(queryText, queryParams);
+                  return res.rows as T[];
+                }
+              } catch (err) {
+                console.warn("[db] replica query failed, falling back to primary:", err);
+              }
             }
-
-            return rows;
-          }
-        } catch (err) {
-          console.warn("[db] replica query failed, falling back to primary:", err);
-        }
+            // Primary query (fallback)
+            const res = await primaryPool!.query(queryText, queryParams);
+            return res.rows as T[];
+          },
+        });
+        return result.rows;
       }
 
-      // --- Primary query (writes or fallback) ---
+      // --- Writes: primary only, then invalidate what the write touched ---
       const res = await primaryPool!.query(text, params);
       const rows = res.rows as T[];
 
-      // Populate cache for read queries from primary too
-      if (useCache) {
-        try {
-          const cacheKey = buildCacheKey("sql", { q: text, p: params });
-          await memcachedClient!.set(cacheKey, rows, 60);
-        } catch {}
-      }
-
-      // On writes, invalidate relevant cache patterns
-      if (!readOnly && useCache) {
-        try {
-          // Simple invalidation: if query touches a table, invalidate that table's cache
-          // We use pattern matching for simplicity
-          const lower = text.toLowerCase();
-          if (lower.includes("revenue")) await memcachedClient!.invalidatePattern("sql:*revenue*");
-          if (lower.includes("expenses")) await memcachedClient!.invalidatePattern("sql:*expenses*");
-          if (lower.includes("sales")) await memcachedClient!.invalidatePattern("sql:*sales*");
-          if (lower.includes("dashboard") || lower.includes("board")) {
-            await memcachedClient!.invalidatePattern("board:*");
-          }
-        } catch {}
-      }
+      const { noteWrite } = await import("./cache/db-guard");
+      await noteWrite(text, params);
 
       return rows;
     });
@@ -265,7 +242,33 @@ async function createPgliteSql(): Promise<Sql> {
   await pass;
 
   return toSql(async <T>(text: string, params: unknown[]) => {
+    const readOnly = isReadOnlyQuery(text);
+
+    // The unguarded runner. The guard's own metadata queries (primary key
+    // lookup, row count, key scan) MUST NOT re-enter the guard — that would
+    // recurse forever.
+    const raw = async (queryText: string, queryParams: unknown[]): Promise<T[]> => {
+      const queryResult = await pg.query<T>(queryText, queryParams);
+      return queryResult.rows;
+    };
+
+    // Reads go through the guard: the positive cache, the negative cache and
+    // the Bloom filter answer most of them without touching the database at
+    // all, and the remaining ones are rate limited.
+    if (readOnly) {
+      const { guardedQuery } = await import("./cache/db-guard");
+      const result = await guardedQuery<T>({
+        sql: text,
+        params,
+        run: raw,
+        meta: raw,
+      });
+      return result.rows;
+    }
+
     const result = await pg.query<T>(text, params);
+    const { noteWrite } = await import("./cache/db-guard");
+    await noteWrite(text, params);
     return result.rows;
   });
 }
@@ -289,7 +292,8 @@ async function createSql(): Promise<Sql> {
  * Enhanced with:
  *   - PgBouncer pooling (if PGBOUNCER_ENABLED or PGBOUNCER_URL set)
  *   - Read replica routing (if DATABASE_REPLICA_URLS set)
- *   - Memcached caching for reads (if enabled)
+ *   - The request guard for reads: positive cache, negative cache, Bloom
+ *     filter, rate limiting and request coalescing (see `cache/db-guard.ts`)
  *
  * Schema comes from `migrations/*.sql`, auto-applied before the first query on
  * both backends — define tables there, never inline in server functions.
@@ -300,6 +304,41 @@ export function getSql(): Promise<Sql> {
     throw err;
   });
   return sqlPromise;
+}
+
+let rawSqlPromise: Promise<Sql> | null = null;
+
+/**
+ * The **unguarded** SQL client — every query hits the database.
+ *
+ * The guard needs it for its own metadata queries (primary key lookup, row
+ * count, key scan): those must never re-enter the guard, or the guard would
+ * call itself forever. Also the escape hatch for maintenance queries that must
+ * see the real state of the database.
+ */
+export function getRawSql(): Promise<Sql> {
+  rawSqlPromise ??= (async () => {
+    if (dbSource === "neon") {
+      const { getPrimaryPool } = await import("./db/replicas");
+      const pool = await getPrimaryPool();
+      if (!pool) throw new Error("No primary pool available for the raw SQL client");
+      return toSql(async <T>(text: string, params: unknown[]) => {
+        const res = await pool.query(text, params);
+        return res.rows as T[];
+      });
+    }
+    await getSql(); // bootstraps PGLite and applies the migrations
+    const pg = await globalRef.__pgliteInstance__;
+    if (!pg) throw new Error("PGLite instance failed to initialize");
+    return toSql(async <T>(text: string, params: unknown[]) => {
+      const res = await pg.query<T>(text, params);
+      return res.rows;
+    });
+  })().catch((err) => {
+    rawSqlPromise = null;
+    throw err;
+  });
+  return rawSqlPromise;
 }
 
 /**
