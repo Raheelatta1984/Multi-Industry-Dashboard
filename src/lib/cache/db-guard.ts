@@ -499,7 +499,10 @@ async function getTableIndex(table: string, meta: MetaRunner): Promise<TableInde
   // for rows created before this moment.
   const builtAt = Date.now();
 
-  let count = 0;
+  // Declared without an initializer on purpose: the try either assigns it or the
+  // catch returns, so a `= 0` default would be dead — and would silently mask a
+  // failed count as a real zero.
+  let count: number;
   try {
     const countRows = (await meta(
       `select count(*)::int as n from ${quoteIdentifier(table)}`,

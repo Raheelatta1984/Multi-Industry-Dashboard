@@ -232,7 +232,9 @@ function inferType(values: CellValue[]): { type: ColumnType; confidence: number;
   const counts = new Map<string, number>();
   const currencyHits = new Map<CurrencyCode, number>();
   for (const v of vals) {
-    let t = "text";
+    // Every branch below assigns, so no initializer: a default here would be
+    // dead code and could hide a gap in the classification chain.
+    let t: string;
     if (typeof v === "boolean") t = "boolean";
     else if (typeof v === "number") t = looksLikeDate(v) ? "date" : "number";
     else {
