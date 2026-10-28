@@ -1,0 +1,7 @@
+{
+  "xlsx": {
+    "advisories": [1108110, 1108111],
+    "expires": "2027-10-28",
+    "reason": "The application must preserve XLSX import/export compatibility; npm reports no upstream fix for these two SheetJS advisories. Replace xlsx with a maintained parser/writer before the exception expires, with server-side input limits retained."
+  }
+}

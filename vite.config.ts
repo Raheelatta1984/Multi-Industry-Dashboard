@@ -11,6 +11,7 @@ import { grokPwaPlugin } from "./scripts/grok-pwa-plugin.mjs";
 // @ts-expect-error JS plugin alongside the TS vite config
 import { appEnvPlugin } from "./scripts/app-env-plugin.mjs";
 import { isMigrationFile } from "./scripts/migration-plan.mjs";
+import { applySecurityHeaders, shouldNoStore } from "./scripts/security-headers.mjs";
 
 /** The files `src/lib/db.ts` globs — same directory, same non-recursive scope. */
 function hasGlobbedMigrations(root: string): boolean {
@@ -61,6 +62,29 @@ function pgliteBootstrapPlugin(): Plugin {
  * and returns the 302 / completion HTML. Deployed apps do not use the popup
  * (full-page OAuth redirect), so `apply: "serve"` is enough.
  */
+/** Apply the deployed security policy to Vite's dev/live-preview responses too. */
+function securityHeadersPlugin(): Plugin {
+  return {
+    name: "app-builder:security-headers",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const forwardedProto = String(req.headers["x-forwarded-proto"] ?? "");
+        const host = String(req.headers["x-forwarded-host"] ?? req.headers.host ?? "");
+        const protocol =
+          forwardedProto.split(",", 1)[0]?.trim() ||
+          ((req.socket as { encrypted?: boolean } | undefined)?.encrypted ? "https:" : "http:");
+        const pathname = (req.url ?? "").split("?", 1)[0] ?? "";
+        const headers = new Headers();
+        applySecurityHeaders(headers, { protocol, forwardedProto, host });
+        if (shouldNoStore(pathname)) headers.set("Cache-Control", "no-store");
+        for (const [name, value] of headers) res.setHeader(name, value);
+        next();
+      });
+    },
+  };
+}
+
 function authPopupPlugin(): Plugin {
   return {
     name: "app-builder:auth-popup",
@@ -73,11 +97,18 @@ function authPopupPlugin(): Plugin {
         try {
           const rawUrl = req.url ?? "";
           const pathOnly = rawUrl.split("?", 1)[0] ?? "";
-          if (pathOnly !== "/auth/popup") {
+          if (pathOnly !== "/auth/popup" && pathOnly !== "/auth/popup/exchange") {
             next();
             return;
           }
-          if ((req.method ?? "GET").toUpperCase() !== "GET") {
+          const method = (req.method ?? "GET").toUpperCase();
+          if (pathOnly === "/auth/popup" && method !== "GET") {
+            res.statusCode = 405;
+            res.setHeader("content-type", "text/plain; charset=utf-8");
+            res.end("Method Not Allowed");
+            return;
+          }
+          if (pathOnly === "/auth/popup/exchange" && method !== "POST") {
             res.statusCode = 405;
             res.setHeader("content-type", "text/plain; charset=utf-8");
             res.end("Method Not Allowed");
@@ -101,18 +132,41 @@ function authPopupPlugin(): Plugin {
             }
           }
           // Ensure Host is the public preview host so Better Auth's dynamic
-          // baseURL / redirect_uri match the popup origin.
-          if (!requestHeaders.has("host")) requestHeaders.set("host", host);
+          // baseURL / redirect_uri match the popup origin, even behind a proxy.
+          requestHeaders.set("host", host);
+
+          let body: Buffer | undefined;
+          if (method === "POST") {
+            const chunks: Buffer[] = [];
+            let size = 0;
+            for await (const chunk of req) {
+              const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+              size += part.byteLength;
+              if (size > 8192) {
+                res.statusCode = 413;
+                res.setHeader("content-type", "text/plain; charset=utf-8");
+                res.end("Request Entity Too Large");
+                return;
+              }
+              chunks.push(part);
+            }
+            body = Buffer.concat(chunks);
+          }
 
           const request = new Request(`${proto}://${host}${rawUrl}`, {
-            method: "GET",
+            method,
             headers: requestHeaders,
+            ...(body ? { body, duplex: "half" as const } : {}),
           });
 
           const mod = (await server.ssrLoadModule("/src/lib/auth/popup.server.ts")) as {
             handleAuthPopupRequest: (req: Request) => Promise<Response>;
+            handlePreviewHandoffExchange: (req: Request) => Promise<Response>;
           };
-          const response = await mod.handleAuthPopupRequest(request);
+          const response =
+            pathOnly === "/auth/popup/exchange"
+              ? await mod.handlePreviewHandoffExchange(request)
+              : await mod.handleAuthPopupRequest(request);
 
           res.statusCode = response.status;
           // Preserve multiple Set-Cookie headers (OAuth state + session).
@@ -127,8 +181,8 @@ function authPopupPlugin(): Plugin {
           for (const cookie of setCookies) {
             res.appendHeader("set-cookie", cookie);
           }
-          const body = Buffer.from(await response.arrayBuffer());
-          res.end(body);
+          const responseBody = Buffer.from(await response.arrayBuffer());
+          res.end(responseBody);
         } catch (err) {
           console.error("[app-builder] /auth/popup handler failed:", err);
           if (!res.headersSent) {
@@ -160,6 +214,7 @@ export default defineConfig(({ command, isPreview }) => ({
   },
   resolve: { tsconfigPaths: true },
   plugins: [
+    securityHeadersPlugin(),
     pgliteBootstrapPlugin(),
     // Before tanstackStart so /auth/popup never falls through to the SPA.
     authPopupPlugin(),

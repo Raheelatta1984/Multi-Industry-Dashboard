@@ -4,25 +4,21 @@
  * module so its effects can be unit-tested (`node --test` only covers
  * `scripts/`), the same split `migration-plan.mjs` uses for the two appliers.
  *
- * The two environments authenticate differently, so they need different
- * answers to "the server did not reply":
- *
- * - **Live preview** — a partitioned iframe with no readable session cookie;
- *   the session rides the bearer token in `sessionStorage`. Dropping that token
- *   IS being signed out, so the server call is best effort and a wedged request
- *   must never strand the button. This is where the hang actually happens.
- * - **Deployed** — the session rides an HttpOnly `__Host-` cookie that JS
- *   cannot delete. ONLY a completed sign-out response clears it, and
- *   `server.ts` enables `session.cookieCache` (maxAge 300), so `/get-session`
- *   would keep answering from the cached cookie for minutes afterwards.
- *   Redirecting on a timeout would show the visitor "signed out" while their
- *   session is still live — so here we fail loudly instead of pretending.
+ * Both current browser environments authenticate with an HttpOnly
+ * `__Host-` cookie that JavaScript cannot delete. ONLY a completed sign-out
+ * response clears it, and `server.ts` enables `session.cookieCache` (maxAge
+ * 300), so `/get-session` would keep answering from the cached cookie for
+ * minutes afterwards. The legacy bearer path remains represented by the
+ * optional `cookieAuth: false` behavior below only for non-browser callers/tests;
+ * the browser passes `cookieAuth: true`.
+ * Redirecting on a timeout would show the visitor "signed out" while their
+ * session is still live — so here we fail loudly instead of pretending.
  */
 
 /**
- * Live preview: aggressive, because the local clear is what signs the user out.
- * The same-origin POST normally answers in tens of ms; lower would start
- * abandoning slow-but-working sign-outs for no gain.
+ * Legacy bearer preview callers use an aggressive bound because their local
+ * clear is the final fallback. Cookie-auth preview callers use the deployed
+ * bound so the server has time to invalidate the HttpOnly session.
  */
 export const PREVIEW_SIGN_OUT_TIMEOUT_MS = 1500;
 
@@ -74,7 +70,8 @@ export function settleWithin(start, timeoutMs) {
 /**
  * @typedef {object} SignOutSteps
  * @property {boolean} livePreview Whether the app is the sandbox preview iframe.
- * @property {boolean} hasBearer Whether a preview bearer token is stored.
+ * @property {boolean} [cookieAuth] Whether the browser session is an HttpOnly cookie.
+ * @property {boolean} hasBearer Whether a legacy preview bearer token is stored.
  * @property {() => unknown} requestSignOut Ask the server to end the session; must reject on a failed response.
  * @property {() => void} clearToken Drop the stored bearer token.
  * @property {() => void} redirect Leave the page.
@@ -84,24 +81,25 @@ export function settleWithin(start, timeoutMs) {
 /**
  * End the session, then clear the local token and redirect.
  *
- * In the live preview those last two always run. When deployed they run only if
- * the server confirmed, because nothing else can clear the cookie — a failed or
- * timed-out sign-out throws rather than reporting a sign-out that did not
- * happen.
+ * Legacy bearer preview callers may clear their local bearer after a
+ * best-effort request. Current cookie-auth callers, including live preview,
+ * clear/redirect only after the server confirms, because nothing else can clear
+ * the HttpOnly cookie.
  * @param {SignOutSteps} steps
  * @returns {Promise<void>}
  */
 export async function runSignOut({
   livePreview,
+  cookieAuth = false,
   hasBearer,
   requestSignOut,
   clearToken,
   redirect,
   timeoutMs,
 }) {
-  if (livePreview) {
-    // No bearer means a partitioned iframe with nothing to invalidate; with one,
-    // still invalidate it server-side, just don't block on the answer.
+  if (livePreview && !cookieAuth) {
+    // Legacy non-cookie preview callers may clear their own in-memory bearer
+    // after a best-effort server invalidation.
     if (hasBearer) {
       await settleWithin(requestSignOut, timeoutMs ?? signOutTimeoutMs(livePreview));
     }
@@ -110,7 +108,10 @@ export async function runSignOut({
     return;
   }
 
-  const outcome = await settleWithin(requestSignOut, timeoutMs ?? signOutTimeoutMs(livePreview));
+  const outcome = await settleWithin(
+    requestSignOut,
+    timeoutMs ?? signOutTimeoutMs(livePreview && !cookieAuth),
+  );
   if (outcome !== "ok") {
     throw new Error(
       outcome === "timeout"
@@ -125,7 +126,8 @@ export async function runSignOut({
 /**
  * @typedef {object} PreSignInSteps
  * @property {boolean} livePreview Whether the app is the sandbox preview iframe.
- * @property {boolean} hasBearer Whether a preview bearer token is stored.
+ * @property {boolean} [cookieAuth] Whether the browser session is an HttpOnly cookie.
+ * @property {boolean} hasBearer Whether a legacy preview bearer token is stored.
  * @property {() => unknown} requestSignOut Ask the server to end any prior session.
  * @property {() => void} clearToken Drop the stored bearer token.
  * @property {number} [timeoutMs]
@@ -147,14 +149,26 @@ export async function runSignOut({
  */
 export async function runPreSignInSignOut({
   livePreview,
+  cookieAuth = false,
   hasBearer,
   requestSignOut,
   clearToken,
   timeoutMs,
 }) {
-  // In the preview a missing bearer means there is nothing to clear.
-  if (hasBearer || !livePreview) {
-    await settleWithin(requestSignOut, timeoutMs ?? signOutTimeoutMs(livePreview));
+  // Cookie-auth browsers must always ask the server to clear the prior session;
+  // legacy bearer callers may skip the request when no bearer exists.
+  if (cookieAuth || hasBearer || !livePreview) {
+    const outcome = await settleWithin(
+      requestSignOut,
+      timeoutMs ?? signOutTimeoutMs(livePreview && !cookieAuth),
+    );
+    if (cookieAuth && outcome !== "ok") {
+      throw new Error(
+        outcome === "timeout"
+          ? "Previous sign-in timed out — please try again."
+          : "Previous sign-in could not be cleared — please try again.",
+      );
+    }
   }
   clearToken();
 }

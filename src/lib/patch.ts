@@ -85,7 +85,7 @@ export function mergeWorkbooks(base: Workbook, incoming: Workbook): { workbook: 
   const sheetsTouched = new Set<SheetKey>();
   let added = 0;
   let updated = 0;
-  let removed = 0;
+  const removed = 0;
   let skipped = 0;
 
   for (const sheet of DATA_SHEETS) {

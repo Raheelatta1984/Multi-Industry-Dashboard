@@ -108,6 +108,19 @@ test("preview: a stored bearer is still invalidated server-side", async () => {
   assert.equal(h.requests, 1);
 });
 
+test("cookie-auth preview: sign-out waits for server confirmation", async () => {
+  const h = preview({ cookieAuth: true, hasBearer: false });
+  await h.run();
+  assert.equal(h.requests, 1);
+  assert.deepEqual(h.order, ["clear", "redirect"]);
+});
+
+test("cookie-auth preview: failed sign-out does not redirect", async () => {
+  const h = preview({ cookieAuth: true, hasBearer: false, requestSignOut: rejects });
+  await assert.rejects(h.run(), /still signed in/);
+  assert.deepEqual(h.order, []);
+});
+
 // ── Deployed ─────────────────────────────────────────────────────────────────
 // JS cannot delete the HttpOnly `__Host-` cookie and `cookieCache` keeps
 // serving the cached session, so an unconfirmed sign-out must NOT look like one.
@@ -227,6 +240,22 @@ test("pre-sign-in: the preview skips the request when there is no bearer", async
   await h.done;
   assert.equal(requests, 0);
   assert.equal(h.cleared, 1);
+});
+
+test("pre-sign-in: cookie-auth preview always clears through the server", async () => {
+  let requests = 0;
+  const h = runPreSignInSignOut({
+    livePreview: true,
+    cookieAuth: true,
+    hasBearer: false,
+    requestSignOut: () => {
+      requests += 1;
+      return Promise.resolve();
+    },
+    clearToken: () => {},
+  });
+  await h;
+  assert.equal(requests, 1);
 });
 
 test("every sign-out bound comes from one rule", () => {
