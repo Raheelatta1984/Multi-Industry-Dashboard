@@ -62,6 +62,9 @@ export function handOver(staged, target, { rename = renameSync } = {}) {
       throw new Error(
         `${staged} is on another filesystem than ${target}, so the hand-over cannot be a `
           + "rename — stage under /workspace/.grok/ instead",
+        // Keep the underlying errno visible: the message explains the contract,
+        // `cause` carries the evidence a debugger or log aggregator needs.
+        { cause: err },
       );
     }
     throw err;

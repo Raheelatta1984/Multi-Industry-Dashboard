@@ -422,25 +422,22 @@ export async function status() {
 async function watch(opts) {
   const interval = opts.interval ?? 15;
   logEvent("watch-start", `polling every ${interval}s (with-server: ${opts.withServer})`, false);
-  let busy = false;
+  // The loop is strictly sequential — every pass awaits before the next one
+  // starts — so a re-entrancy flag could never be observed as set. Cross-process
+  // overlap is already handled by acquireLock() below.
   for (;;) {
-    if (!busy) {
-      busy = true;
-      try {
-        if (!acquireLock()) {
-          // Another guard instance is mid-recovery; leave it to them.
-        } else {
-          try {
-            await recover(opts);
-          } finally {
-            releaseLock();
-          }
+    try {
+      if (!acquireLock()) {
+        // Another guard instance is mid-recovery; leave it to them.
+      } else {
+        try {
+          await recover(opts);
+        } finally {
+          releaseLock();
         }
-      } catch (err) {
-        logEvent("watch-error", String(err).slice(0, 200), false);
-      } finally {
-        busy = false;
       }
+    } catch (err) {
+      logEvent("watch-error", String(err).slice(0, 200), false);
     }
     await sleep(interval * 1000);
   }
