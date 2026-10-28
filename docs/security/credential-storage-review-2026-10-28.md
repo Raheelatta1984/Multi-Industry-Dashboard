@@ -140,11 +140,10 @@ The dev log records Better Auth's missing `user`, `session`, `account`, and `ver
 
 This section is intentionally updated only after remote operations complete. The branch must remain the current Arena branch for all work. Required safety rules: use a PR, do not bypass protection or force-push, merge only a green PR with squash if permitted, never delete `main`/protected/open-PR branches, and delete only merged non-default branches.
 
-- Implementation commit: `510a8f8` (`security: harden auth transport and response policy`); the review-record commit is part of PR #7.
-- Push: complete to `origin arena/bcdf6e4b-multi-industry-dashboard`.
-- Pull request: [#7](https://github.com/Raheelatta1984/Multi-Industry-Dashboard/pull/7), from the session branch into `main`.
-- Checks/merge: squash-only merge through `gh pr merge 7 --squash`, after required checks are green; the GitHub PR timeline is the authoritative merge/check record.
-- Cleanup: merged-only inspection; PR #6 already merged `arena/a2ef1f91-multi-industry-dashboard`, and that branch is unprotected, behind `main`, ahead by zero, and has no open PR. `main` is never targeted. The session branch remains until the final post-merge cleanup decision.
+- Implementation commits: `510a8f8` (`security: harden auth transport and response policy`) and `d285f8d` (`ci: align locked install with peer resolution`); review record was included in PR #7 by `8609dcb`.
+- Push and PR: complete; [PR #7](https://github.com/Raheelatta1984/Multi-Industry-Dashboard/pull/7) was opened from the session branch into `main`.
+- Checks/merge: the first CI attempt failed at `npm ci` because the lockfile requires legacy peer resolution; the workflow was corrected, the rerun passed, and PR #7 was merged with `gh pr merge 7 --squash` at merge commit `476d0dc1081028ac2fffd51eddedd14569cdbe11`.
+- Cleanup: merged-only inspection confirmed PR #6 and PR #7 were merged, both branches were unprotected with no open PR, and `main` was never targeted. Remote `arena/a2ef1f91-multi-industry-dashboard` and `arena/bcdf6e4b-multi-industry-dashboard` were deleted; `origin` now exposes only `main`. The checked-out Arena branch remains only as the local session ref so no branch switch was required.
 
 ## Deferred work and rollback notes
 
