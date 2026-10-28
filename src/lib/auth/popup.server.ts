@@ -7,21 +7,30 @@
  *
  *   Phase 1 (`?providerId=…`): start OAuth server-side and 302 straight to the
  *     broker / upstream login page. The popup never paints the app.
- *   Phase 2 (`?done=1`): after the broker round-trip, emit a tiny HTML page that
- *     posts the session token to the opener and closes. No SPA hydrate, no
- *     server-fn round-trip.
+ *   Phase 2 (`?done=1`): exchange the popup's session cookie for a short-lived,
+ *     single-use handoff code. The code is posted to the opener; the reusable
+ *     session value stays server-side and is set only as an HttpOnly cookie by
+ *     `/auth/popup/exchange`.
  *
  * Wired automatically by the Vite `authPopupPlugin` in `vite.config.ts` during
  * `npm run dev` (live preview). Do NOT create `src/routes/auth/popup.tsx` — a
  * React route here paints the full app shell in the popup. The opener lives in
  * `client.ts` (`signIn` → `openSignInPopup`).
  */
-import { auth, SESSION_TOKEN_COOKIE } from "./server";
+import {
+  SESSION_DATA_COOKIE,
+  SESSION_MAX_AGE_SECONDS,
+  SESSION_TOKEN_COOKIE,
+  auth,
+} from "./server";
+import {
+  consumePreviewHandoff,
+  createPreviewHandoff,
+} from "./preview-handoff.server";
 
-/** Message shape the popup posts to the opener (must match `client.ts`). */
 type PopupMessage = {
   source: "grok-auth-popup";
-  token: string | null;
+  handoffCode: string | null;
   error?: string;
 };
 
@@ -35,17 +44,18 @@ export async function handleAuthPopupRequest(request: Request): Promise<Response
 
   if (done) {
     const errored = url.searchParams.has("error");
-    const token = errored ? null : readCookie(request, SESSION_TOKEN_COOKIE);
+    const sessionCookie = errored ? null : readCookie(request, SESSION_TOKEN_COOKIE);
+    const handoffCode = sessionCookie ? createPreviewHandoff(sessionCookie) : null;
     const message: PopupMessage = {
       source: "grok-auth-popup",
-      token,
-      ...(errored ? { error: url.searchParams.get("error") ?? "sign_in_failed" } : {}),
+      handoffCode,
+      ...(!handoffCode ? { error: "sign_in_failed" } : {}),
     };
     return new Response(completionHtml(message), {
       status: 200,
       headers: {
         "content-type": "text/html; charset=utf-8",
-        // Never cache a page that embeds a session token.
+        // Never cache a page containing even a one-time handoff capability.
         "cache-control": "no-store",
       },
     });
@@ -62,9 +72,9 @@ export async function handleAuthPopupRequest(request: Request): Promise<Response
   // Stay first-party for the callback so the session cookie lands in THIS popup.
   const back = `${url.origin}/auth/popup?done=1`;
   try {
-    const apiRes = await auth.api.signInWithOAuth2({
+    const apiRes = await auth.api.signInSocial({
       body: {
-        providerId,
+        provider: providerId,
         callbackURL: back,
         errorCallbackURL: `${back}&error=1`,
       },
@@ -75,11 +85,10 @@ export async function handleAuthPopupRequest(request: Request): Promise<Response
     });
 
     if (!apiRes.ok) {
-      const detail = await apiRes.text().catch(() => "");
       return completionResponse({
         source: "grok-auth-popup",
-        token: null,
-        error: detail || `oauth_init_failed_${apiRes.status}`,
+        handoffCode: null,
+        error: "oauth_init_failed",
       });
     }
 
@@ -90,7 +99,7 @@ export async function handleAuthPopupRequest(request: Request): Promise<Response
     if (!location) {
       return completionResponse({
         source: "grok-auth-popup",
-        token: null,
+        handoffCode: null,
         error: "oauth_init_missing_url",
       });
     }
@@ -102,14 +111,95 @@ export async function handleAuthPopupRequest(request: Request): Promise<Response
       headers.append("set-cookie", cookie);
     }
     return new Response(null, { status: 302, headers });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "oauth_init_threw";
+  } catch {
     return completionResponse({
       source: "grok-auth-popup",
-      token: null,
-      error: message,
+      handoffCode: null,
+      error: "oauth_init_failed",
     });
   }
+}
+
+/**
+ * Exchange the popup-only handoff code in the opener's same-origin context.
+ * The request must carry a matching Origin or Referer, and the code is consumed
+ * before a Set-Cookie is returned, so a replay cannot re-authenticate a browser.
+ */
+export async function handlePreviewHandoffExchange(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  if (request.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  if (!sameOriginMutation(request, url)) {
+    return new Response("Forbidden", {
+      status: 403,
+      headers: { "cache-control": "no-store" },
+    });
+  }
+
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().startsWith("application/json")) {
+    return new Response("Unsupported Media Type", { status: 415 });
+  }
+  const raw = await request.text();
+  if (raw.length > 2048) {
+    return new Response("Request Entity Too Large", { status: 413 });
+  }
+
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return new Response("Bad Request", { status: 400 });
+  }
+  const code =
+    body && typeof body === "object" && "handoffCode" in body
+      ? (body as { handoffCode?: unknown }).handoffCode
+      : null;
+  if (typeof code !== "string" || code.length > 256) {
+    return new Response("Bad Request", { status: 400 });
+  }
+
+  const sessionCookie = consumePreviewHandoff(code);
+  if (!sessionCookie) {
+    return new Response("Handoff expired", {
+      status: 401,
+      headers: { "cache-control": "no-store" },
+    });
+  }
+
+  const headers = new Headers({ "cache-control": "no-store" });
+  headers.append("set-cookie", sessionCookieHeader(sessionCookie));
+  // Do not let a prior iframe cache answer as the newly signed-in user.
+  headers.append("set-cookie", expiredCookieHeader(SESSION_DATA_COOKIE));
+  return new Response(null, { status: 204, headers });
+}
+
+function sameOriginMutation(request: Request, url: URL): boolean {
+  const origin = request.headers.get("origin");
+  if (origin) return origin === url.origin;
+  const referer = request.headers.get("referer");
+  if (!referer) return false;
+  try {
+    return new URL(referer).origin === url.origin;
+  } catch {
+    return false;
+  }
+}
+
+function sessionCookieHeader(value: string): string {
+  return [
+    `${SESSION_TOKEN_COOKIE}=${encodeURIComponent(value)}`,
+    `Max-Age=${SESSION_MAX_AGE_SECONDS}`,
+    "Path=/",
+    "HttpOnly",
+    "Secure",
+    "SameSite=Lax",
+  ].join("; ");
+}
+
+function expiredCookieHeader(name: string): string {
+  return `${name}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax`;
 }
 
 function completionResponse(message: PopupMessage): Response {
@@ -122,10 +212,11 @@ function completionResponse(message: PopupMessage): Response {
   });
 }
 
-/** Minimal HTML: postMessage the token to the opener and close. No React. */
+/** Minimal HTML: post only the one-time handoff code and close. No session token. */
 function completionHtml(message: PopupMessage): string {
   // JSON is safe inside a <script type="application/json"> block; the inline
-  // script only reads it. Avoids escaping pitfalls of embedding in JS source.
+  // script only reads it. Escape `<` so a future message field cannot terminate
+  // the data element and become markup.
   const payload = JSON.stringify(message).replace(/</g, "\\u003c");
   return `<!doctype html>
 <html lang="en">
@@ -145,7 +236,7 @@ function completionHtml(message: PopupMessage): string {
 <script>
 (function () {
   var el = document.getElementById("grok-auth-popup-msg");
-  var msg = { source: "grok-auth-popup", token: null };
+  var msg = { source: "grok-auth-popup", handoffCode: null };
   try { if (el && el.textContent) msg = JSON.parse(el.textContent); } catch (e) {}
   try {
     if (window.opener) window.opener.postMessage(msg, window.location.origin);

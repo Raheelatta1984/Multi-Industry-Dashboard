@@ -1,4 +1,3 @@
-import { genericOAuthClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
 import { runPreSignInSignOut, runSignOut } from "../../../scripts/sign-out-plan.mjs";
 import { GROK_PROVIDERS } from "./providers";
@@ -6,66 +5,42 @@ import { GROK_PROVIDERS } from "./providers";
 /**
  * Better Auth client for this React SPA (browser-side).
  *
- * Talks to this app's OWN Better Auth at same-origin `/api/auth/*`. In the live
- * preview the app is an embedded iframe with PARTITIONED cookies, so after a
- * popup sign-in it can't read the session cookie — it authenticates with a
- * bearer token instead (captured from the popup, see `signIn`). The `onRequest`
- * hook attaches that token when present; when deployed (cookie auth) no token
- * is stored, so nothing changes.
+ * Talks to this app's OWN Better Auth at same-origin `/api/auth/*`. Both the
+ * deployed path and live-preview handoff use the server-managed HttpOnly cookie;
+ * browser JavaScript never stores or attaches a reusable session bearer.
  *
- * To sign out call `signOut()` below, NOT `authClient.signOut()`: the raw call
- * leaves the bearer token in place, and `onRequest` keeps re-attaching it, so
- * the visitor stays signed in.
+ * To sign out call `signOut()` below so the server confirms that the HttpOnly
+ * cookie was invalidated before the UI redirects.
  */
-export const authClient = createAuthClient({
-  plugins: [genericOAuthClient()],
-  fetchOptions: {
-    onRequest(ctx) {
-      const token = getBearerToken();
-      if (token) ctx.headers.set("Authorization", `Bearer ${token}`);
-      return ctx;
-    },
-  },
-});
+export const authClient = createAuthClient();
 
 /**
  * True when sign-in UI should be shown — i.e. whenever `VITE_AUTH_ENABLED` is
  * not `"false"`. The shipped template sets it to `"false"`
  * (`.grok/app-env.json`), which selects the dev user (see `use-current-user`);
- * with the key removed, sign-in is real in preview (baked preview client) and
- * when deployed (injected per-app client).
+ * with the key removed, sign-in is real when the runtime injects the preview or
+ * deployed client credentials.
  */
 export const authEnabled = import.meta.env.VITE_AUTH_ENABLED !== "false";
 
 /** The upstream providers to render sign-in buttons for. */
 export { GROK_PROVIDERS };
 
-// ── Live-preview bearer token ────────────────────────────────────────────────
-// The embedded preview iframe has partitioned cookies, so we keep the session's
-// bearer token in sessionStorage and attach it to every Better Auth request (and
-// to server functions, via `@/lib/auth/middleware`). Empty everywhere except the
-// preview after a popup sign-in, so the cookie path is untouched elsewhere.
-const BEARER_KEY = "grok-auth.bearer-token";
+// The old live-preview implementation persisted a reusable bearer in
+// sessionStorage. Remove that legacy value once per page load; the current flow
+// never reads from or writes credentials to browser storage.
+const LEGACY_BEARER_KEY = "grok-auth.bearer-token";
 
-/** The stored preview bearer token, or null. */
-export function getBearerToken(): string | null {
-  if (typeof window === "undefined") return null;
-  try {
-    return window.sessionStorage.getItem(BEARER_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function setBearerToken(token: string | null): void {
+function purgeLegacyBearer(): void {
   if (typeof window === "undefined") return;
   try {
-    if (token) window.sessionStorage.setItem(BEARER_KEY, token);
-    else window.sessionStorage.removeItem(BEARER_KEY);
+    window.sessionStorage.removeItem(LEGACY_BEARER_KEY);
   } catch {
     /* storage unavailable — ignore */
   }
 }
+
+purgeLegacyBearer();
 
 /**
  * The sandbox live preview runs this app inside an iframe on a `*.grok-sandbox.com`
@@ -80,7 +55,11 @@ function inLivePreview(): boolean {
 }
 
 /** Message the popup posts back to the opener once sign-in completes. */
-type PopupMessage = { source: "grok-auth-popup"; token: string | null; error?: string };
+type PopupMessage = {
+  source: "grok-auth-popup";
+  handoffCode: string | null;
+  error?: string;
+};
 
 /**
  * Start sign-in with one upstream provider (`providerId` from `GROK_PROVIDERS`),
@@ -89,8 +68,9 @@ type PopupMessage = { source: "grok-auth-popup"; token: string | null; error?: s
  * - **Live preview** (`*.grok-sandbox.com` iframe): opens a POPUP to
  *   `/auth/popup`, served by the template Vite plugin (see `vite.config.ts` +
  *   `popup.server.ts`) — 302s to the broker/upstream login (no app chrome) and,
- *   on return, posts the session bearer token back. We store it and refresh the
- *   session; no top-level navigation of the iframe to the broker.
+ *   on return, posts a one-time handoff code back. The opener exchanges it for
+ *   an HttpOnly session cookie; no top-level navigation of the iframe to the
+ *   broker.
  * - **Deployed** (and local non-iframe): a normal full-page redirect into the broker.
  *
  * Either way it clears any existing local session FIRST so switching providers
@@ -109,25 +89,26 @@ export async function signIn(
   const popup = inLivePreview() ? openSignInPopup(providerId) : null;
 
   // Clear any prior session so switching providers actually switches identity.
-  // Bounded because the popup is already open — a request that never settles
-  // would leave it hanging — but bounded PER ENVIRONMENT: only the server can
-  // end a deployed session, so cutting it short at the preview's 1.5s would
-  // start OAuth with the old session still live.
+  // The cookie-auth path waits for server confirmation before starting OAuth;
+  // the popup is already open, but a failed/timeout response must not leave an
+  // old session riding into the new provider flow.
   await runPreSignInSignOut({
     livePreview: inLivePreview(),
-    hasBearer: Boolean(getBearerToken()),
+    cookieAuth: true,
+    hasBearer: false,
     requestSignOut: () => authClient.signOut(),
-    clearToken: () => setBearerToken(null),
+    clearToken: () => {},
   });
 
   if (inLivePreview()) {
     if (!popup) throw new Error("Pop-up blocked — allow pop-ups for sign-in");
-    const token = await waitForPopupToken(popup);
-    if (!token) throw new Error("Sign-in was cancelled or failed");
-    setBearerToken(token);
-    // Refresh the client session store with the bearer attached (onRequest).
-    // Avoid a full iframe reload when we're already on the destination — that
-    // reload was the slow "still loading after the popup closed" feeling.
+    const handoffCode = await waitForPopupHandoff(popup);
+    if (!handoffCode || !(await exchangePreviewHandoff(handoffCode))) {
+      throw new Error("Sign-in was cancelled or failed");
+    }
+    // Refresh the client session store after the same-origin exchange sets the
+    // HttpOnly cookie. Avoid a full iframe reload when we are already on the
+    // destination — that reload was the slow "still loading" feeling.
     try {
       await authClient.getSession();
     } catch {
@@ -143,8 +124,8 @@ export async function signIn(
     return;
   }
 
-  const { data, error } = await authClient.signIn.oauth2({
-    providerId,
+  const { data, error } = await authClient.signIn.social({
+    provider: providerId,
     callbackURL,
     errorCallbackURL,
   });
@@ -170,25 +151,25 @@ function openSignInPopup(providerId: string): Window | null {
 }
 
 /**
- * Wait for the popup's completion page to postMessage the session bearer (or
- * for the user to dismiss the popup).
+ * Wait for the popup to post a one-time handoff code (or for the user to
+ * dismiss the popup). The reusable session value never crosses this boundary.
  */
-function waitForPopupToken(popup: Window): Promise<string | null> {
+function waitForPopupHandoff(popup: Window): Promise<string | null> {
   return new Promise((resolve) => {
     const origin = window.location.origin;
     let settled = false;
     let closeTimer: number | undefined;
-    const settle = (token: string | null) => {
+    const settle = (handoffCode: string | null) => {
       if (settled) return;
       settled = true;
       cleanup();
-      resolve(token);
+      resolve(handoffCode);
     };
     const onMessage = (event: MessageEvent) => {
-      if (event.origin !== origin) return;
+      if (event.origin !== origin || event.source !== popup) return;
       const data = event.data as PopupMessage | undefined;
       if (!data || data.source !== "grok-auth-popup") return;
-      settle(data.token ?? null);
+      settle(typeof data.handoffCode === "string" ? data.handoffCode : null);
     };
     // Fallback when the user dismisses the popup. Grace period lets the
     // completion page's postMessage win over a racing `popup.closed`.
@@ -206,29 +187,40 @@ function waitForPopupToken(popup: Window): Promise<string | null> {
   });
 }
 
+/** Exchange the short-lived code in the opener's same-origin cookie context. */
+async function exchangePreviewHandoff(handoffCode: string): Promise<boolean> {
+  try {
+    const response = await fetch("/auth/popup/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ handoffCode }),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Sign out of THIS app's local session, clear the preview token, then redirect.
+ * Sign out of THIS app's local session, then redirect.
  *
- * Use this, never `authClient.signOut()` — see the note on `authClient`.
- * Sequencing lives in `scripts/sign-out-plan.mjs` so it can be unit-tested.
- *
- * **Rejects when deployed if the server never confirms.** There the session is
- * an HttpOnly cookie only the server can clear, so redirecting anyway would
- * report a sign-out that did not happen. `<UserButton />` handles that for you;
- * a hand-rolled control must catch it and let the visitor retry. In the live
- * preview the local clear is sufficient, so it always resolves.
+ * Use this, never `authClient.signOut()` — sequencing lives in
+ * `scripts/sign-out-plan.mjs` so it can be unit-tested. The server must confirm
+ * the HttpOnly cookie was invalidated; a failed or timed-out response does not
+ * redirect and claim that the visitor is signed out.
  */
 export async function signOut(redirectTo = "/"): Promise<void> {
   await runSignOut({
     livePreview: inLivePreview(),
-    hasBearer: Boolean(getBearerToken()),
+    cookieAuth: true,
+    hasBearer: false,
     // Better Auth resolves with `{ error }` instead of rejecting, so surface a
     // failed response as a rejection for the sequence to act on.
     requestSignOut: async () => {
       const { error } = await authClient.signOut();
       if (error) throw new Error(error.message ?? "Sign-out failed");
     },
-    clearToken: () => setBearerToken(null),
+    clearToken: () => {},
     redirect: () => {
       window.location.href = redirectTo;
     },
